@@ -6,7 +6,7 @@
 
 ## 1. 它是什么
 
-MTFile 的扩展（整个架构，即这个仓库，由AI制作）是一个 **iOS 动态库（.dylib）+ 一个 manifest.json**，打成 zip 交给 App 安装。安装后宿主 `dlopen` 这个 dylib，调用它导出的 `MTCreateExtension()` 拿到一个实现 `MTExtV2Extension` 协议的对象，再按需向它要页面：
+MTFile 的扩展（整个扩展架构，即这个仓库，由AI制作）是一个 **iOS 动态库（.dylib）+ 一个 manifest.json**，打成 zip 交给 App 安装。安装后宿主 `dlopen` 这个 dylib，调用它导出的 `MTCreateExtension()` 拿到一个实现 `MTExtV2Extension` 协议的对象，再按需向它要页面：
 
 - **侧栏条目页**：侧栏会多出一个分类，点条目 → 调 `mt_makePageForItem:context:` 拿一个 `UIViewController` 弹出来。
 - **编辑器接管**：某个文件被打开时，如果扩展在 manifest 里声明了这个后缀，宿主先问 `mt_makeEditorForPath:`，返回 nil 就回退内置编辑器。
