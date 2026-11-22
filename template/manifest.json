@@ -1,0 +1,16 @@
+{
+  "framework": "v2.0.0",
+  "id": "com.example.mtext.template",
+  "name": "扩展模板",
+  "version": "1.0.0",
+  "author": "yourname",
+  "description": "改 id/name 和 side.items 就能开工的最小骨架",
+  "dylib": "MTExtTemplate.dylib",
+  "sidebar": {
+    "category": "示例分类",
+    "items": [
+      { "id": "main", "title": "主页", "icon": "square.grid.2x2" },
+      { "id": "about", "title": "关于", "icon": "info.circle" }
+    ]
+  }
+}
