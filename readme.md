@@ -1,7 +1,7 @@
 # MTFile（iOS版MT管理器)的扩展开发文档
 
 想直接让 AI 帮你写扩展，看同目录的 `EXTENSION_SDK_AI.md`。
-
+扩展示例为同目录下的 `template`和 `demo`
 ---
 
 ## 1. 它是什么
