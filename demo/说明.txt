@@ -1,0 +1,13 @@
+MT 扩展 v2 · 能力演示（com.lgyz.mt.ext.demo）
+
+安装：MTFile 文件列表里点这个 zip，会提示「安装扩展」，装到 MTFile/Extensions2，重启应用后侧栏出现「扩展演示」分类。
+
+包含：
+1) 侧栏分类注入（manifest sidebar）
+2) 四个自绘页面：能力总览 / 文件浏览器 / 压缩包探查 / 主题与波纹
+3) 通过 objc runtime 调用宿主能力：MTTheme 配色、MTMaterialRipple 波纹、MTAlertCenter 弹窗、MTProgressHUD 进度框
+4) 自带 zip 中央目录解析（不依赖任何外部命令）
+5) 编辑器接管：manifest 声明 editorExtensions 后，点 .md/.txt 进入扩展自己的编辑器
+6) 纯 CoreAnimation 动效：逐条滑入、脉冲光斑
+
+源码：MTDemoExt.m + MTDemoAPI.h + build.sh（本机 clang 直接编 arm64 dylib）
