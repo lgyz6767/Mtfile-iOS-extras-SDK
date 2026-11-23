@@ -4,6 +4,7 @@
 #import <objc/message.h>
 #include <string.h>
 #include <stdlib.h>
+#include <dlfcn.h>
 
 #pragma mark - 宿主桥（全部走 objc runtime，不依赖宿主 C 符号）
 
@@ -654,6 +655,101 @@ static NSArray<NSDictionary *> *MTZipEntries(NSData *d) {
 
 #pragma mark - 工厂
 
+
+#pragma mark - 权限演示（v2.1）：联网 / 终端必须用户手动同意
+
+typedef BOOL (*MT_ConsentQuery)(NSString *, NSString *);
+typedef void (*MT_ConsentAsk)(NSString *, NSString *, NSString *, void (^)(BOOL));
+typedef pid_t (*MT_ShellRun)(NSString *, NSString *, NSString *, void (^)(NSString *, BOOL), void (^)(int));
+typedef void (*MT_NetGet)(NSString *, NSString *, NSDictionary *, void (^)(NSData *, NSInteger, NSError *));
+
+static MT_ConsentQuery gConsentQuery;
+static MT_ConsentAsk gConsentAsk;
+static MT_ShellRun gShellRun;
+static MT_NetGet gNetGet;
+static void loadCaps(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        gConsentQuery = (MT_ConsentQuery)dlsym(RTLD_DEFAULT, "MTExtConsentGranted");
+        gConsentAsk   = (MT_ConsentAsk)dlsym(RTLD_DEFAULT, "MTExtRequestConsent");
+        gShellRun     = (MT_ShellRun)dlsym(RTLD_DEFAULT, "MTExtShellRun");
+        gNetGet       = (MT_NetGet)dlsym(RTLD_DEFAULT, "MTExtNetRequest");
+    });
+}
+
+@interface MTDemoCapsVC : UIViewController
+@property (nonatomic, strong) UITextView *tv;
+@end
+
+@implementation MTDemoCapsVC
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    loadCaps();
+    self.title = @"权限 · 终端 · 网络";
+    self.view.backgroundColor = MTBg();
+    CGFloat w = self.view.bounds.size.width;
+
+    self.tv = [[UITextView alloc] initWithFrame:CGRectMake(16, 76, w - 32, self.view.bounds.size.height - 240)];
+    self.tv.editable = NO;
+    self.tv.backgroundColor = MTPanel();
+    self.tv.textColor = MTText();
+    self.tv.font = [UIFont fontWithName:@"Menlo" size:12] ?: [UIFont systemFontOfSize:12];
+    self.tv.text = @"这里的每个按钮都会先让用户看到宿主弹窗（允许 / 拒绝），\n描述文件里写一句不算授权。\n";
+    [self.view addSubview:self.tv];
+
+    NSArray *titles = @[@"终端：跑 uname -a", @"网络：GET 市场索引", @"查看当前授权状态"];
+    CGFloat y = self.view.bounds.size.height - 150;
+    for (NSInteger i = 0; i < titles.count; i++) {
+        UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
+        b.frame = CGRectMake(16, y, w - 32, 40);
+        b.backgroundColor = MTCell();
+        b.layer.cornerRadius = 10;
+        [b setTitle:titles[i] forState:UIControlStateNormal];
+        [b setTitleColor:MTText() forState:UIControlStateNormal];
+        b.tag = i;
+        [b addTarget:self action:@selector(tap:) forControlEvents:UIControlEventTouchUpInside];
+        [self.view addSubview:b];
+        y += 48;
+    }
+}
+
+- (void)append:(NSString *)s {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        self.tv.text = [self.tv.text stringByAppendingFormat:@"\n%@", s ?: @""];
+        [self.tv scrollRangeToVisible:NSMakeRange(self.tv.text.length, 1)];
+    });
+}
+
+- (void)tap:(UIButton *)b {
+    NSString *eid = @"com.lgyz.mt.ext.demo";
+    if (!gConsentQuery) { [self append:@"宿主没有 v2.1 权限 API，升级 MTFile 到 1.2.0-14+"]; return; }
+    if (b.tag == 0) {
+        if (!gShellRun) { [self append:@"宿主没有 MTExtShellRun"]; return; }
+        [self append:@"$ uname -a"];
+        pid_t pid = gShellRun(eid, @"uname -a", @"/var/mobile", ^(NSString *chunk, BOOL isErr) {
+            [self append:chunk];
+        }, ^(int st) {
+            [self append:[NSString stringWithFormat:@"[退出码 %d]", st]];
+        });
+        [self append:[NSString stringWithFormat:@"pid = %d（-1 表示没权限或没 shell）", pid]];
+    } else if (b.tag == 1) {
+        if (!gNetGet) { [self append:@"宿主没有 MTExtNetRequest"]; return; }
+        [self append:@"GET https://lgyz6767.github.io/repo/ext/index.json"];
+        gNetGet(eid, @"https://lgyz6767.github.io/repo/ext/index.json", nil, ^(NSData *d, NSInteger code, NSError *e) {
+            if (e) { [self append:[NSString stringWithFormat:@"失败：%@", e.localizedDescription]]; return; }
+            NSString *body = [[NSString alloc] initWithData:d encoding:NSUTF8StringEncoding] ?: @"";
+            [self append:[NSString stringWithFormat:@"HTTP %ld，%lu 字节\n%@", (long)code, (unsigned long)d.length,
+                         body.length > 400 ? [body substringToIndex:400] : body]];
+        });
+    } else {
+        BOOL net = gConsentQuery(eid, @"network");
+        BOOL term = gConsentQuery(eid, @"terminal");
+        [self append:[NSString stringWithFormat:@"network = %@，terminal = %@\n（= NO 时下次调用会重新弹窗）",
+                     net ? @"允许" : @"未允许", term ? @"允许" : @"未允许"]];
+    }
+}
+@end
+
 @interface MTDemoExt : NSObject <MTExtV2Extension>
 @end
 
@@ -666,6 +762,7 @@ static NSArray<NSDictionary *> *MTZipEntries(NSData *d) {
         return [[MTDemoFilesVC alloc] initWithPath:p];
     }
     if ([itemID isEqualToString:@"zip"])   return [MTDemoZipVC new];
+    if ([itemID isEqualToString:@"caps"])  return [MTDemoCapsVC new];
     if ([itemID isEqualToString:@"lab"])   return [MTDemoLabVC new];
     return [MTDemoHomeVC new];
 }

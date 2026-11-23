@@ -1,30 +1,47 @@
-# MTFile（iOS版MT管理器)的扩展开发文档
+# MTFile（iOS 版 MT 管理器）扩展开发文档 · v2.1
 
-想直接让 AI 帮你写扩展，看同目录的 `EXTENSION_SDK_AI.md`。
-扩展示例为同目录下的 `template`和 `demo`
+想直接让 AI 帮你写扩展，看同目录的 `EXTENSION_SDK_AI.md`；想上架到扩展市场，看 `MARKET.md`。
+示例：`template`（最小骨架）、`demo`（四页自绘 UI + 权限/终端/网络演示）。
+
 ---
 
 ## 1. 它是什么
 
-MTFile 的扩展（整个扩展架构，即这个仓库，由AI制作）是一个 **iOS 动态库（.dylib）+ 一个 manifest.json**，打成 zip 交给 App 安装。安装后宿主 `dlopen` 这个 dylib，调用它导出的 `MTCreateExtension()` 拿到一个实现 `MTExtV2Extension` 协议的对象，再按需向它要页面：
+MTFile 的扩展是一个 **iOS 动态库（.dylib）+ 一个 manifest.json**，打成扩展包交给 App 安装。装好后宿主 `dlopen` 这个 dylib，调用它导出的 `MTCreateExtension()` 拿到实现 `MTExtV2Extension` 协议的对象，按需向它要页面：
 
-- **侧栏条目页**：侧栏会多出一个分类，点条目 → 调 `mt_makePageForItem:context:` 拿一个 `UIViewController` 弹出来。
-- **编辑器接管**：某个文件被打开时，如果扩展在 manifest 里声明了这个后缀，宿主先问 `mt_makeEditorForPath:`，返回 nil 就回退内置编辑器。
+- **侧栏条目页**：侧栏多出一个分类，点条目 → `mt_makePageForItem:context:` 返回一个 `UIViewController`。
+- **编辑器接管**：文件打开时，扩展在 manifest 里声明过后缀，宿主先问 `mt_makeEditorForPath:`，返回 nil 回退内置编辑器。
 
-扩展跑在宿主进程里，共享宿主的内存、UI 与权限，所以不用起服务、不用 IPC。
+扩展跑在宿主进程里，共享宿主内存、UI 与权限，不起服务、不走 IPC。
 
-> 不兼容官方 MT 管理器的扩展格式。MTFile 只认 `"framework": "v2.0.0"`。
+> 不兼容官方 MT 管理器的扩展格式。MTFile 只认 `"framework": "v2.x.x"`（推荐写 `v2.1.0`）。
 
 ---
 
 ## 2. 包结构
 
+扩展包后缀是 **`.mtextra`**（本质就是 zip，改后缀是为了让宿主不去解析普通 zip，省算力）。扩展名不对也能装，但只有 `.mtextra` 会被宿主当成“准扩展”优先识别。
+
+单扩展（推荐）：
+
 ```
-MyExt.zip
-├── manifest.json          ← 必须在 zip 根目录（只套一层同名文件夹也认）
+MyExt.mtextra
+├── manifest.json          ← 扩展根
 ├── MyExt.dylib            ← manifest 的 dylib 字段指向它
+├── icon.png               ← 可选，自定义图标（manifest.iconImage）
 └── resources/...          ← 可选，自己按相对路径读
 ```
+
+一个包多个扩展（v2.1 支持）：
+
+```
+Bundle.mtextra
+├── extA/manifest.json + A.dylib + icon.png
+├── extB/manifest.json + B.dylib
+└── extC/manifest.json + C.dylib
+```
+
+规则：**包根有 manifest.json** → 只装根上这一个（子目录忽略）；**根上没有** → 扫一层子目录，每个含 manifest.json 的直接装；再没有就退一层（套娃目录）。所以「只套一层同名文件夹」也照样认。
 
 安装目录：`/var/mobile/Documents/MTFile/Extensions2/<id>/`。
 
@@ -34,14 +51,18 @@ MyExt.zip
 
 ```json
 {
-  "framework": "v2.0.0",
+  "framework": "v2.1.0",
   "id": "com.example.myext",
   "name": "我的扩展",
   "version": "1.0.0",
   "author": "你的名字",
   "description": "一句话说明",
   "dylib": "MyExt.dylib",
-  "editorExtensions": ["md", "txt"],
+  "iconImage": "icon.png",
+  "capabilities": ["network", "terminal"],
+  "editors": [
+    { "format": "md", "name": "Markdown 编辑器", "icon": "square.and.pencil" }
+  ],
   "sidebar": {
     "category": "我的工具",
     "items": [
@@ -54,17 +75,19 @@ MyExt.zip
 
 | 字段 | 必填 | 说明 |
 |---|---|---|
-| `framework` | 是 | 固定 `v2.0.0`，其它版本宿主直接拒装 |
-| `id` | 是 | 唯一标识，同时是安装目录名；建议反向域名 |
-| `name` | 否 | 管理页显示名，缺省用 id |
-| `version` | 否 | 字符串，只用于展示与更新比较 |
-| `dylib` | 是 | dylib 相对路径，必须在 zip 内存在 |
-| `editorExtensions` | 否 | 允许接管的文件后缀数组（不带点，如 `md`）。不写就不接管任何编辑器 |
-| `editors` | 否 | **推荐**。数组，声明每个编辑器：`{"format":"md","name":"Markdown 编辑器","icon":"square.and.pencil"}`。`icon` 用 SF Symbols 名，`name` 显示在「打开方式 → 扩展」，`format` 决定归到文本/图片/视频/压缩包哪一类。写了它就不用再写 `editorExtensions`（宿主会合并两者） |
-| `sidebar` | 否 | `category` 分类名；`items` 每项 `id/title/icon`。不写则侧栏不出现 |
-| `icon` | 否 | SF Symbol 名称，宿主原样用 |
+| `framework` | 是 | `v2.1.0`（任何 `v2` 前缀都收；`v1` 直接拒装） |
+| `id` | 是 | 唯一标识，同时是安装目录名；建议反向域名。**市场里必须与目录名一致** |
+| `name` | 否 | 管理页/侧栏显示名，缺省用 id |
+| `version` | 否 | 字符串，市场用它判断可更新 |
+| `dylib` | 是 | dylib 相对路径，必须在包内存在 |
+| `iconImage` | 否 | **自定义图标**，相对扩展目录的 PNG（建议 96×96 或 128×128，透明底）。缺省/读不到时回退 `icon` 的 SF Symbol |
+| `icon` | 否 | SF Symbol 名，侧栏兜底图标 |
+| `capabilities` | 否 | 声明 `network` / `terminal`，**仅用于展示**；真正能不能用取决于用户是否在弹窗里点「允许」 |
+| `editors` | 否 | 推荐。每个编辑器 `{format,name,icon}`，`name` 显示在「打开方式 → 扩展」 |
+| `editorExtensions` | 否 | 老写法，纯后缀数组；与 `editors` 合并 |
+| `sidebar` | 否 | `category` 分类名，`items` 每项 `{id,title,icon,iconImage?}`；条目也能单独指定 `iconImage` |
 
-`sidebar.items` 的 `id` 会原样传给 `mt_makePageForItem:`，宿主不认识它的语义，全靠你自己分派。
+`sidebar.items[].id` 原样传给 `mt_makePageForItem:`，语义全靠你自己分派。
 
 ---
 
@@ -74,49 +97,19 @@ MyExt.zip
 #import <UIKit/UIKit.h>
 
 @protocol MTExtV2Extension <NSObject>
-// 必选：侧栏条目被点开时调用，itemID 就是 manifest 里的 sidebar.items[].id
-- (UIViewController *)mt_makePageForItem:(NSString *)itemID context:(NSDictionary *)ctx;
+- (UIViewController *)mt_makePageForItem:(NSString *)itemID context:(NSDictionary *)ctx;  // 必选
 @optional
-// 可选：返回 nil 表示不接管，宿主回退内置编辑器
-- (UIViewController *)mt_makeEditorForPath:(NSString *)path;
+- (UIViewController *)mt_makeEditorForPath:(NSString *)path;                              // 返回 nil 不接管
 @end
 
-// 必须导出的 C 函数（宿主按名字 dlsym）
-id<MTExtV2Extension> MTCreateExtension(void);
+id<MTExtV2Extension> MTCreateExtension(void);   // 必须导出（宿主 dlsym）
 ```
 
-`context` 目前可能带 `path`（当前目录）等信息，按 key 取，不要假设一定有。
-
-实现示例：
-
-```objc
-#import <UIKit/UIKit.h>
-#import "MTExtAPI.h"   // 见第 6 节，把协议声明拷进工程即可
-
-@interface MyExt : NSObject <MTExtV2Extension>
-@end
-
-@implementation MyExt
-- (UIViewController *)mt_makePageForItem:(NSString *)itemID context:(NSDictionary *)ctx {
-    UIViewController *vc = [UIViewController new];
-    vc.view.backgroundColor = UIColor.systemBackgroundColor;
-    UILabel *l = [[UILabel alloc] initWithFrame:vc.view.bounds];
-    l.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    l.textAlignment = NSTextAlignmentCenter;
-    l.text = [NSString stringWithFormat:@"页面：%@", itemID];
-    [vc.view addSubview:l];
-    return vc;
-}
-@end
-
-id<MTExtV2Extension> MTCreateExtension(void) { return [MyExt new]; }
-```
+`context` 可能带 `path`（当前目录）、`extensionDir`（扩展安装目录），按 key 取，别假设一定存在。
 
 ---
 
 ## 5. 构建
-
-不需要完整 Theos 工程，一条 clang 就能出 dylib（Linux/macOS 都行，SDK 用 Theos 的 iPhoneOS sdk）：
 
 ```bash
 SDK=/path/to/theos/sdks/iPhoneOS16.5.sdk
@@ -129,103 +122,109 @@ CLANG=/path/to/theos/toolchain/linux/iphone/bin/clang
   -framework UIKit -framework Foundation -framework CoreGraphics \
   -undefined dynamic_lookup \
   -Os -o MyExt.dylib MyExt.m
-```
-
-要点：
-
-- **必须** `-undefined dynamic_lookup`。宿主类（`MTTheme` 之类）在 App 主二进制里，链接期找不到符号，靠运行期解析。
-- arm64 即可（iPhone 7 / arm64e 设备也能加载 arm64 切片）。
-- `-fobjc-arc` 打开，扩展代码按 ARC 写；宿主与扩展是同一进程同一 runtime，OC 对象可以自由传递。
-
-签名（rootless 环境需要）：
-
-```bash
 /path/to/ldid -S MyExt.dylib
+cd MyExt && zip -r ../MyExt.mtextra manifest.json MyExt.dylib icon.png
 ```
 
-没有 `ldid` 时宿主安装后也会尝试签名，但提前签好更稳。
-
-打包（**manifest.json 必须在 zip 根，不要套一层目录**）：
-
-```bash
-cd MyExt && zip -r ../MyExt.zip manifest.json MyExt.dylib
-```
+- **必须** `-undefined dynamic_lookup`：宿主类在主二进制里，靠运行期解析。
+- arm64 切片即可（arm64e 设备也能加载）。
+- 用 `-fobjc-arc`。
+- 打包用 `.mtextra`，manifest 在包根（多扩展才用子目录）。
 
 ---
 
 ## 6. 和宿主交互（可选）
 
-扩展里直接 `NSClassFromString` 拿宿主类，能白嫖主题、弹窗、波纹等。协议声明自己拷一份即可，不必依赖宿主头文件：
-
-```objc
-static UIColor *hostColor(NSString *sel, UIColor *fallback) {
-    id cls = NSClassFromString(@"MTTheme");
-    SEL s = NSSelectorFromString(sel);
-    if (![cls respondsToSelector:s]) return fallback;
-    IMP imp = [cls methodForSelector:s];
-    UIColor *(*fn)(id, SEL) = (void *)imp;
-    return fn(cls, s) ?: fallback;
-}
-// hostColor(@"bg", ...) / @"panel" / @"cell" / @"text" / @"textDim" / @"accent"
-```
-
-常用宿主能力（都在主二进制里，缺了就 fallback）：
+`NSClassFromString` 直接拿宿主类，协议声明自己拷一份，不依赖宿主头文件。调用一律 `respondsToSelector` 保护。
 
 | 类 | 用途 |
 |---|---|
-| `MTTheme` | 颜色：`bg/panel/cell/text/textDim/accent`，字体缩放 `uiScale` |
-| `MTMaterialRipple` | `enableOnButton:style:` 给按钮加方形波纹 |
-| `MTAlertCenter` | `showWithTitle:message:` 统一风格弹窗 |
-| `MTFileStore` | 文件操作、`hexDigestOfData:algorithm:` 等 |
-| `MTExtV2Store` | 宿主侧扩展管理（`installZipAtPath:` 等，扩展通常不用） |
-
-调用宿主方法一律用 `respondsToSelector` + `NSInvocation`/IMP 保护，宿主版本升级时不至于崩。
+| `MTTheme` | `bg/panel/cell/text/textDim/accent`、`uiScale` |
+| `MTMaterialRipple` | `enableOnButton:style:` 波纹 |
+| `MTAlertCenter` | `showWithTitle:message:` |
+| `MTFileStore` | 文件操作、`hexDigestOfData:algorithm:` |
+| `MTExtV2Store` | 宿主侧扩展管理，扩展一般不用 |
 
 ---
 
-## 7. 安装与调试
+## 7. 权限：联网与终端（v2.1 新增，重点）
 
-1. 开发者：把 zip 拷到设备任意目录，App 里点它 → 识别为扩展 → 安装。
-2. 管理页会显示加载状态；失败时把 `diagnoseExtension:` 的整段原因贴出来（含尝试过的路径）。
-3. 重装同一 id 会自动覆盖旧目录并清掉各回退位置的旧 dylib 副本——**扩展更新自己**是支持的，装完再点一次「重新加载」即可。
+扩展和宿主同进程，但**联网、跑命令不能自己说了算**：必须让用户在宿主弹窗里点「允许」，结果记在 `NSUserDefaults`（键 `mt_ext_consent.<id>.<cap>`）。描述文件里写 `capabilities` 只是声明，**不代表已授权**。
 
-沙盒限制（重要）：
+C 符号都在宿主主二进制里，扩展用 `dlsym(RTLD_DEFAULT, …)` 取：
 
-- deb 版（rootless / roothide，非沙盒）：可以从 `/var/mobile/Documents/...` 原地 `dlopen`。
-- IPA 版（TrollStore / WQ / 沙盒）：数据目录被禁止 `mmap` 可执行页，宿主会自动把 dylib 复制到容器缓存目录（`Library/Caches/MTExtensions`、`/var/jb/var/mobile/Library/Caches/MTExtensions` 等）再加载。
-- 别把 dylib 放进只读位置，也别假设某个回退路径一定可写。
+```objc
+#include <dlfcn.h>
+
+typedef BOOL (*MT_ConsentQuery)(NSString *, NSString *);
+typedef void (*MT_ConsentAsk)(NSString *, NSString *, NSString *, void (^)(BOOL));
+typedef pid_t (*MT_ShellRun)(NSString *, NSString *, NSString *, void (^)(NSString *, BOOL), void (^)(int));
+typedef void (*MT_NetGet)(NSString *, NSString *, NSDictionary *, void (^)(NSData *, NSInteger, NSError *));
+
+MT_ConsentQuery consent = (MT_ConsentQuery)dlsym(RTLD_DEFAULT, "MTExtConsentGranted");
+MT_ConsentAsk   ask     = (MT_ConsentAsk)dlsym(RTLD_DEFAULT, "MTExtRequestConsent");
+MT_ShellRun     shell   = (MT_ShellRun)dlsym(RTLD_DEFAULT, "MTExtShellRun");
+MT_NetGet       net     = (MT_NetGet)dlsym(RTLD_DEFAULT, "MTExtNetRequest");
+```
+
+| 能力 | 说明 |
+|---|---|
+| `@"network"` | 联网。首次调用 `MTExtNetRequest` 会弹「允许/拒绝」；拒绝后回调错误，下次调用再问 |
+| `@"terminal"` | 跑命令。`MTExtShellRun` 内部查 shell（`/var/jb/usr/bin/bash` → `sh` → `/bin/sh`），未授权返回 -1 并在输出块里写原因 |
+| `MTExtConsentGranted(eid, cap)` | 查当前状态，不弹窗 |
+| `MTExtRequestConsent(eid, cap, reason, cb)` | 主动申请，`cb` 在主线程 |
+| `MTExtNetRequest(eid, url, headers, cb)` | GET，带同意流程，回调主线程；**扩展自己用裸 NSURLSession 绕过去，宿主拦不住**，请自觉走这个接口 |
+| `MTExtShellRun(eid, cmd, cwd, onOut, onExit)` | 走 `bash -lc`，标准输出/错误分块回调；**只有非沙盒版（deb/rootless/roothide）可用**，IPA/TrollStore 版沙盒 `posix_spawn` 被拒 |
+
+沙盒版判断：`MTExtProcessAvailable()` / `MTExtProcessUnavailableReason()`。要给用户明确提示「终端功能需要 deb 版」，别直接白屏。
+
+完整可跑示例见 `demo/MTDemoExt.m` 里的 `MTDemoCapsVC`。
 
 ---
 
-## 8. 编辑器接管与按格式禁用
+## 8. 安装与调试
 
-manifest 写了 `editorExtensions` 才参与接管。多个扩展抢同一个后缀时，宿主按安装顺序问，第一个返回非 nil 的就赢。
+1. 把 `.mtextra` 拷到设备任意目录，App 里点它或「扩展管理 → 安装」选中它。
+2. 一个包多个扩展时，装完会提示装了哪几个。
+3. 管理页显示加载状态；失败时给出 `diagnoseExtension:` 的原因（含尝试过的路径）。
+4. 重装同 id 会覆盖旧目录并清掉回退位置的旧副本；装完点一次「重新加载」。
 
-用户可以在「扩展管理 → 详情 → 编辑器接管」里**按格式**关掉某个扩展（不影响扩展其它功能），所以：
+沙盒限制：
 
-- 返回 nil 要干脆，别为了“占坑”随便返回一个空 VC。
-- 编辑器要自己处理保存、脏状态；没有把握就别声明这个后缀。
+- deb 版（rootless/roothide）：可从 `/var/mobile/Documents/...` 原地 `dlopen`。
+- IPA 版：数据目录禁止 `mmap` 可执行页，宿主会把 dylib 复制到 `Library/Caches/MTExtensions` 等位置再加载。
+- 别把 dylib 放只读位置。
 
 ---
 
-## 9. 常见坑
+## 9. 编辑器接管与按格式禁用
+
+manifest 写了 `editors`/`editorExtensions` 才参与接管。多个扩展抢同一后缀时按安装顺序问，第一个返回非 nil 的赢。用户能在「扩展管理 → 详情 → 编辑器接管」按格式关掉某个扩展，所以返回 nil 要干脆。
+
+---
+
+## 10. 常见坑
 
 | 现象 | 原因 |
 |---|---|
-| 装不上，提示框架版本不对 | `framework` 不是 `v2.0.0` |
-| 装上了但侧栏没有 | manifest 没写 `sidebar`，或 `items` 为空 |
-| 点条目闪退 | `mt_makePageForItem:` 返回了 nil，或返回的 VC 在 `viewDidLoad` 里访问了不存在的宿主类 |
-| dylib 加载失败 | 没加 `-undefined dynamic_lookup`，或 arm64 切片对不上 |
-| 编辑器不生效 | `editorExtensions` 没写 / 用户在详情页关掉了该格式 / 别的扩展先返回了 VC |
-| 页面顶部被导航栏压住 | 自定义 VC 请设 `edgesForExtendedLayout = UIRectEdgeNone`，宿主会给扩展页配不透明导航栏 |
+| 装不上，框架版本不对 | `framework` 不是 `v2.x` |
+| 装上了但侧栏没有 | 没写 `sidebar` 或 `items` 为空 |
+| 点条目闪退 | `mt_makePageForItem:` 返回 nil，或 VC 里访问了不存在的宿主类 |
+| dylib 加载失败 | 少了 `-undefined dynamic_lookup`，或切片不对 |
+| 图标不显示 | `iconImage` 路径不在扩展目录内、文件不是 PNG，或 id 与目录名不一致 |
+| 终端调用返回 -1 | 用户没允许 terminal；或当前是 IPA/沙盒版；或设备没有 `/var/jb` 的 bash/sh |
+| 联网一直失败码 2 | 用户点了「拒绝」 |
+| 编辑器不生效 | 没声明后缀 / 用户关掉了该格式 / 别的扩展先接管 |
+| 页面顶部被压住 | 自定义 VC 设 `edgesForExtendedLayout = UIRectEdgeNone` |
 
 ---
 
-## 10. 最小清单
+## 11. 最小清单
 
-- [ ] `manifest.json` 在 zip 根，`framework` = `v2.0.0`，`id` 唯一
+- [ ] 包后缀 `.mtextra`，manifest 在包根（多扩展才用子目录，每层都要 manifest.json）
+- [ ] `framework` = `v2.1.0`，`id` 唯一（上市场时 = 目录名）
 - [ ] dylib 名与 manifest 一致，导出 `MTCreateExtension`
-- [ ] 编译带 `-undefined dynamic_lookup`，arm64
-- [ ] 已 `ldid -S`
-- [ ] 侧栏每个 `items[].id` 在 `mt_makePageForItem:` 里都有分支
-- [ ] 所有宿主方法调用都有 `respondsToSelector` 保护
+- [ ] 编译带 `-undefined dynamic_lookup`，arm64，已 `ldid -S`
+- [ ] 侧栏每个 `items[].id` 都有分支
+- [ ] 用了联网/终端 → 走 `MTExtNetRequest` / `MTExtShellRun`，并处理「拒绝」与沙盒两种情况
+- [ ] 上市场：按 `MARKET.md` 放 `repo/ext/<id>/`，版本号记得改

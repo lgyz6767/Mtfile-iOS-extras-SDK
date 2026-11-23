@@ -9,6 +9,6 @@ cd "$(dirname "$0")"
 ls -l MTExtTemplate.dylib
 LDID=${LDID:-/home/user/ios-toolchain/ldid}
 [ -x "$LDID" ] && "$LDID" -S MTExtTemplate.dylib || true
-rm -f MTExtTemplate.zip
-zip -q -r MTExtTemplate.zip manifest.json MTExtTemplate.dylib
-ls -l MTExtTemplate.zip
+rm -f MTExtTemplate.zip MTExtTemplate.mtextra
+zip -q -r MTExtTemplate.mtextra manifest.json MTExtTemplate.dylib icon.png
+ls -l MTExtTemplate.mtextra

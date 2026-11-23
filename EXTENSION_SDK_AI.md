@@ -1,4 +1,4 @@
-# MTFile Extension SDK — AI 施工规格（v2.0.0）
+# MTFile Extension SDK — AI 施工规格（v2.1.0）
 
 本文件是给 AI 的执行契约。读完直接产出文件，不要改写格式，不要省略任何必填字段。
 
@@ -9,6 +9,8 @@
 1. `manifest.json`
 2. `MyExt.m`（单个 Objective-C 源文件，不要拆多文件）
 3. `build.sh`
+
+可选：`icon.png`（128×128 透明底，配合 manifest 的 `iconImage`）。
 
 不要产出：Makefile、Podfile、Info.plist、Swift 文件、CocoaPods/Carthage 配置、Xcode 工程。
 
@@ -21,20 +23,23 @@
 - dylib 目标架构 `arm64`，部署目标 iOS 15.0。
 - 不得写文件到 `/var/mobile/Documents/MTFile/Extensions2`（那是宿主目录）。
 - 不得使用私有 API 做与文件系统无关的事（如 `LSApplicationWorkspace` 枚举 App）。
-- 不得包含网络请求、后台常驻、hook 其它进程。
+- 允许联网与调用终端，但**必须**走宿主 API `MTExtNetRequest` / `MTExtShellRun`（它们会先弹窗让用户手动同意）；**禁止**自己裸 `NSURLSession` 绕过同意流程。
+- 不得后台常驻、hook 其它进程。
 - 不得声明 `editorExtensions` 却没有真正可用的 `mt_makeEditorForPath:`。
 
 ## 2. manifest.json（严格 schema）
 
 ```json
 {
-  "framework": "v2.0.0",
+  "framework": "v2.1.0",
   "id": "com.<author>.<extname>",
   "name": "<中文名，≤12 字>",
   "version": "1.0.0",
   "author": "<author>",
   "description": "<一句话，≤40 字>",
   "dylib": "MyExt.dylib",
+  "iconImage": "icon.png",
+  "capabilities": [],
   "editors": [
     { "format": "<ext1>", "name": "<编辑器显示名>", "icon": "<SF Symbols 名>" }
   ],
@@ -48,7 +53,10 @@
 ```
 
 规则：
-- `framework` 必须是字符串 `"v2.0.0"`。
+- `framework` 必须是 `"v2.1.0"`（宿主认任何 `v2` 前缀）。
+- `iconImage` 可选，相对包路径的 PNG；侧栏优先用它，读不到回退 `icon` 的 SF Symbol。
+- `capabilities` 可选，`["network","terminal"]` 只是声明；真正能用取决于用户弹窗同意。
+- 用不到联网/终端就把 `capabilities` 删掉，别写空数组以外的假声明。
 - `id` 必须唯一、小写、点分；安装目录名等于 id。
 - `editorExtensions` 每项不带点、小写。没有编辑器能力时**必须省略该字段**。
 - `sidebar.items` 至少 1 项、至多 6 项；每项 `id` 在代码里必须有对应分支。
@@ -125,20 +133,22 @@ cd "$(dirname "$0")"
   -undefined dynamic_lookup -Os -o MyExt.dylib MyExt.m
 LDID=${LDID:-/home/user/ios-toolchain/ldid}
 [ -x "$LDID" ] && "$LDID" -S MyExt.dylib || true
-zip -q -r MyExt.zip manifest.json MyExt.dylib
+zip -q -r MyExt.mtextra manifest.json MyExt.dylib icon.png   # 没有 icon.png 就去掉
 ```
 
 ## 6. 自检清单（输出前逐条勾）
 
 - [ ] 只有 3 个文件，均落在 `MyExt/`
 - [ ] `manifest.json` 是合法 JSON，无注释、无尾逗号
-- [ ] `framework` = `"v2.0.0"`，`dylib` = `"MyExt.dylib"`
+- [ ] `framework` = `"v2.1.0"`，`dylib` = `"MyExt.dylib"`
+- [ ] 产物后缀 `.mtextra`；`iconImage` 指向的 PNG 真在包里
 - [ ] 代码里 `MTCreateExtension` 存在且返回实现协议的对象
 - [ ] `sidebar.items[].id` 每个都在 `mt_makePageForItem:` 有分支
 - [ ] 无 Swift、无第三方依赖、无 Xcode 工程
 - [ ] 所有宿主类调用都有 `respondsToSelector` 保护
 - [ ] 每个 VC 都设了 `edgesForExtendedLayout`
 - [ ] 没有声明 `editorExtensions`（除非确实实现了编辑器）
+- [ ] 联网/终端都走宿主 API，且处理了「拒绝」与「沙盒版不可用」
 
 ## 7. 宿主 API 速查
 
@@ -157,6 +167,20 @@ MTMaterialRipple: + enableOnButton:style:   // style 0=方形 1=圆形
 MTFileStore: + attributes / + hexDigestOfData:algorithm: / 读目录等
 ```
 
+C 符号（`dlsym(RTLD_DEFAULT, …)` 取，需 `#include <dlfcn.h>`）：
+
+```objc
+BOOL  MTExtConsentGranted(NSString *eid, NSString *cap);              // cap: @"network" / @"terminal"
+void  MTExtRequestConsent(NSString *eid, NSString *cap, NSString *reason, void (^cb)(BOOL));
+pid_t MTExtShellRun(NSString *eid, NSString *cmd, NSString *cwd,
+                    void (^onOut)(NSString *, BOOL), void (^onExit)(int));   // 需 terminal 同意
+void  MTExtNetRequest(NSString *eid, NSString *url, NSDictionary *headers,
+                      void (^done)(NSData *, NSInteger, NSError *));         // 需 network 同意，自动弹窗
+BOOL  MTExtProcessAvailable(void);      // 沙盒版为 NO，终端不可用
+```
+
+终端只有 deb 版（rootless/roothide）能跑；IPA/TrollStore 版 `MTExtShellRun` 返回 -1，必须给用户文字提示而不是空白页。
+
 调用方式：`NSClassFromString` + `NSSelectorFromString` + `respondsToSelector` 判空后再调；拿不到就用自己的 fallback，**不允许**因为宿主类缺失而崩溃或返回 nil VC。
 
 ## 8. 禁止事项
@@ -164,4 +188,11 @@ MTFileStore: + attributes / + hexDigestOfData:algorithm: / 读目录等
 - 禁止在 `mt_makePageForItem:` 里做长耗时同步 IO（>50ms），需要就 `dispatch_async`。
 - 禁止 `dlopen` 其它 dylib。
 - 禁止修改宿主 bundle 内文件。
-- 禁止自建进程、守护、定时器常驻。
+- 禁止自建进程、守护、定时器常驻（要跑命令用 `MTExtShellRun`）。
+- 禁止把联网代码写在自己起的 NSURLSession 里绕过 `MTExtNetRequest`。
+
+## 9. 打包与上架市场
+
+- 单个扩展：`manifest.json` + dylib + icon 直接放包根，输出 `.mtextra`。
+- 一个包多个扩展（v2.1 支持，仅本地安装）：根目录不要放 manifest，放 `extA/`、`extB/` 各自一套；宿主扫子目录逐个装。**上市场必须拆成单扩展包。**
+- 上架步骤、目录命名、CI 校验规则见 `MARKET.md`。

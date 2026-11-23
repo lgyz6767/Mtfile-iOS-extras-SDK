@@ -1,19 +1,49 @@
 {
-  "framework": "v2.0.0",
+  "framework": "v2.1.0",
   "id": "com.lgyz.mt.ext.demo",
   "name": "扩展能力演示",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "author": "lgyz",
   "description": "一个不依赖任何外部工具的演示扩展：注入侧栏分类、四页自绘 UI、调用宿主主题/波纹/弹窗/HUD、接管 Markdown 编辑器，并自带 zip 解析器。用来展示 v2 扩展框架当前能做到的上限。",
   "dylib": "MTDemoExt.dylib",
-  "editorExtensions": ["md", "markdown", "txt"],
+  "editorExtensions": [
+    "md",
+    "markdown",
+    "txt"
+  ],
   "sidebar": {
     "category": "扩展演示",
     "items": [
-      { "id": "home",  "title": "能力总览", "icon": "sparkles" },
-      { "id": "files", "title": "文件浏览器", "icon": "folder" },
-      { "id": "zip",   "title": "压缩包探查", "icon": "archivebox" },
-      { "id": "lab",   "title": "主题与波纹", "icon": "paintbrush" }
+      {
+        "id": "home",
+        "title": "能力总览",
+        "icon": "sparkles"
+      },
+      {
+        "id": "files",
+        "title": "文件浏览器",
+        "icon": "folder"
+      },
+      {
+        "id": "zip",
+        "title": "压缩包探查",
+        "icon": "archivebox"
+      },
+      {
+        "id": "lab",
+        "title": "主题与波纹",
+        "icon": "paintbrush"
+      },
+      {
+        "id": "caps",
+        "title": "权限 · 终端 · 网络",
+        "icon": "lock.shield"
+      }
     ]
-  }
+  },
+  "iconImage": "icon.png",
+  "capabilities": [
+    "network",
+    "terminal"
+  ]
 }

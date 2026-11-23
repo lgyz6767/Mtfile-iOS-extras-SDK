@@ -9,6 +9,6 @@ cd "$(dirname "$0")"
 ls -l MTDemoExt.dylib
 LDID=${LDID:-/home/user/ios-toolchain/ldid}
 [ -x "$LDID" ] && "$LDID" -S MTDemoExt.dylib || true
-rm -f MTDemoExt.zip
-zip -q -r MTDemoExt.zip manifest.json MTDemoExt.dylib
-ls -l MTDemoExt.zip
+rm -f MTDemoExt.zip MTDemoExt.mtextra
+zip -q -r MTDemoExt.mtextra manifest.json MTDemoExt.dylib icon.png
+ls -l MTDemoExt.mtextra

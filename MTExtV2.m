@@ -157,6 +157,7 @@ static NSArray<NSDictionary *> *gCache = nil;
             [groups[cat] addObject:@{@"title": it[@"title"] ?: @"未命名",
                                      @"id": it[@"id"] ?: @"default",
                                      @"icon": it[@"icon"] ?: @"puzzlepiece",
+                                     @"iconImage": it[@"iconImage"] ?: (e[@"iconImage"] ?: @""),
                                      @"extID": e[@"id"] ?: @""}];
         }
     }
@@ -353,64 +354,66 @@ static uint32_t rd32(const uint8_t *p) { return (uint32_t)(p[0] | (p[1] << 8) | 
 #pragma mark - 安装 / 卸载
 
 + (BOOL)isExtensionZip:(NSString *)zipPath {
-    if (![zipPath.pathExtension.lowercaseString isEqualToString:@"zip"]) return NO;
-    NSData *d = [NSData dataWithContentsOfFile:zipPath options:NSDataReadingMappedIfSafe error:NULL];
-    return d && [d rangeOfData:[@"manifest.json" dataUsingEncoding:NSUTF8StringEncoding] options:0 range:NSMakeRange(0, MIN(d.length, 200000))].location != NSNotFound;
+    return [[zipPath.pathExtension lowercaseString] isEqualToString:@"zip"] && [self isExtensionArchive:zipPath];
 }
 
-+ (BOOL)installZipAtPath:(NSString *)zipPath error:(NSError **)err {
-    [self ensureDir];
-    NSString *tmp = [NSTemporaryDirectory() stringByAppendingPathComponent:@"_mt_ext2"];
-    [NSFileManager.defaultManager removeItemAtPath:tmp error:NULL];
-    NSError *e = nil;
-    if (![self extractZip:zipPath toDirectory:tmp error:&e]) {
-        if (err) *err = e;
-        return NO;
+// .mtextra 本质是 zip：只看魔数与目录，不整包解压，普通 zip 不会被误判/白算
++ (BOOL)isExtensionArchive:(NSString *)path {
+    if (!path.length || ![[NSFileManager defaultManager] fileExistsAtPath:path]) return NO;
+    if (!MTZipIsArchiveFile(path)) return NO;
+    for (NSDictionary *e in MTZipListEntries(path)) {
+        NSString *n = e[@"name"] ?: @"";
+        if (![n hasSuffix:@"manifest.json"]) continue;
+        // 根目录 / 一层子目录 / 两层子目录（一个 zip 多扩展时常见多一层）
+        if ([n isEqualToString:@"manifest.json"] || n.pathComponents.count <= 3) return YES;
     }
-    // 兼容“整个扩展被套在一个顶层文件夹里”的 zip
-    NSString *mp = [tmp stringByAppendingPathComponent:@"manifest.json"];
-    if (![NSFileManager.defaultManager fileExistsAtPath:mp]) {
-        NSArray *subs = [NSFileManager.defaultManager contentsOfDirectoryAtPath:tmp error:NULL];
-        NSMutableArray *dirs = [NSMutableArray array];
-        for (NSString *n in subs) {
-            BOOL isDir = NO;
-            [NSFileManager.defaultManager fileExistsAtPath:[tmp stringByAppendingPathComponent:n] isDirectory:&isDir];
-            if (isDir) [dirs addObject:n];
-        }
-        if (dirs.count == 1) {
-            NSString *cand = [tmp stringByAppendingPathComponent:dirs.firstObject];
-            if ([NSFileManager.defaultManager fileExistsAtPath:[cand stringByAppendingPathComponent:@"manifest.json"]]) {
-                tmp = cand;
-                mp = [tmp stringByAppendingPathComponent:@"manifest.json"];
-            }
-        }
-    }
+    return NO;
+}
+
++ (UIImage *)iconForItem:(NSDictionary *)item {
+    if (![item isKindOfClass:[NSDictionary class]]) return nil;
+    UIImage *custom = [self iconImageForExtension:item[@"extID"] file:item[@"iconImage"]];
+    if (custom) return [custom imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal];
+    return [UIImage systemImageNamed:[item[@"icon"] description]];
+}
+
++ (UIImage *)iconImageForExtension:(NSString *)eid file:(NSString *)rel {
+    if (!eid.length || !rel.length) return nil;
+    if ([rel containsString:@".."]) return nil;
+    NSString *p = [[[self rootPath] stringByAppendingPathComponent:eid] stringByAppendingPathComponent:rel];
+    if (![[NSFileManager defaultManager] fileExistsAtPath:p]) return nil;
+    return [UIImage imageWithContentsOfFile:p];
+}
+
+// 从一个解压好的目录安装单个扩展；成功返回 {id, name, version, target}
++ (NSDictionary *)installSingleFromDir:(NSString *)dir error:(NSError **)err {
+    NSString *mp = [dir stringByAppendingPathComponent:@"manifest.json"];
     NSData *md = [NSData dataWithContentsOfFile:mp];
     NSDictionary *m = md ? [NSJSONSerialization JSONObjectWithData:md options:0 error:NULL] : nil;
     if (![m isKindOfClass:[NSDictionary class]]) {
         if (err) *err = [NSError errorWithDomain:@"MTExtV2" code:3 userInfo:@{NSLocalizedDescriptionKey: @"zip 内缺少 manifest.json 或 JSON 格式错误"}];
-        return NO;
+        return nil;
     }
     if (![[m[@"framework"] description] hasPrefix:@"v2"]) {
         if (err) *err = [NSError errorWithDomain:@"MTExtV2" code:4 userInfo:@{NSLocalizedDescriptionKey: @"扩展框架版本不是 v2.0.0，属于旧版扩展，请使用旧安装方式"}];
-        return NO;
+        return nil;
     }
     NSString *dylib = m[@"dylib"] ?: @"";
-    if (!dylib.length || ![NSFileManager.defaultManager fileExistsAtPath:[tmp stringByAppendingPathComponent:dylib]]) {
+    if (!dylib.length || ![[NSFileManager defaultManager] fileExistsAtPath:[dir stringByAppendingPathComponent:dylib]]) {
         if (err) *err = [NSError errorWithDomain:@"MTExtV2" code:5 userInfo:@{NSLocalizedDescriptionKey: @"manifest 指定的 dylib 不存在"}];
-        return NO;
+        return nil;
     }
     NSString *eid = m[@"id"] ?: m[@"name"];
     if (!eid.length) {
         if (err) *err = [NSError errorWithDomain:@"MTExtV2" code:6 userInfo:@{NSLocalizedDescriptionKey: @"manifest 缺少 id"}];
-        return NO;
+        return nil;
     }
     NSString *target = [[self rootPath] stringByAppendingPathComponent:eid];
-    [NSFileManager.defaultManager removeItemAtPath:target error:NULL];
+    [[NSFileManager defaultManager] removeItemAtPath:target error:NULL];
     NSError *mvErr = nil;
-    if (![NSFileManager.defaultManager moveItemAtPath:tmp toPath:target error:&mvErr]) {
+    if (![[NSFileManager defaultManager] moveItemAtPath:dir toPath:target error:&mvErr]) {
         if (err) *err = mvErr;
-        return NO;
+        return nil;
     }
     NSString *dylibPath = [target stringByAppendingPathComponent:dylib];
     chmod(dylibPath.UTF8String, 0755);
@@ -418,16 +421,96 @@ static uint32_t rd32(const uint8_t *p) { return (uint32_t)(p[0] | (p[1] << 8) | 
     chmod(dylibPath.UTF8String, 0755);
     [self purgeCacheForExtension:eid];
     [self invalidate];
-    return YES;
+    return @{@"id": eid, @"name": m[@"name"] ?: eid, @"version": m[@"version"] ?: @"", @"target": target};
 }
 
++ (NSArray<NSDictionary *> *)installArchiveAtPath:(NSString *)path error:(NSError **)err {
+    [self ensureDir];
+    if (![self isExtensionArchive:path]) {
+        if (err) *err = [NSError errorWithDomain:@"MTExtV2" code:2 userInfo:@{NSLocalizedDescriptionKey: @"这不是扩展包：zip 里（含一层子目录）找不到 manifest.json"}];
+        return nil;
+    }
+    NSString *tmp = [NSTemporaryDirectory() stringByAppendingPathComponent:@"_mt_ext2"];
+    [NSFileManager.defaultManager removeItemAtPath:tmp error:NULL];
+    NSError *e = nil;
+    if (![self extractZip:path toDirectory:tmp error:&e]) { if (err) *err = e; return nil; }
+
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSMutableArray *cands = [NSMutableArray array];
+    if ([fm fileExistsAtPath:[tmp stringByAppendingPathComponent:@"manifest.json"]]) {
+        [cands addObject:tmp];      // 根上有就是单扩展，忽略子目录
+    } else {
+        // 根上没有 → 一层子目录都试一遍，实现一个 zip 装多个扩展
+        for (NSString *n in [fm contentsOfDirectoryAtPath:tmp error:NULL] ?: @[]) {
+            NSString *sub = [tmp stringByAppendingPathComponent:n];
+            BOOL isDir = NO;
+            [fm fileExistsAtPath:sub isDirectory:&isDir];
+            if (isDir && [fm fileExistsAtPath:[sub stringByAppendingPathComponent:@"manifest.json"]]) [cands addObject:sub];
+        }
+        if (!cands.count) {
+            // 再退一层：套娃目录
+            for (NSString *n in [fm contentsOfDirectoryAtPath:tmp error:NULL] ?: @[]) {
+                NSString *sub = [tmp stringByAppendingPathComponent:n];
+                BOOL isDir = NO;
+                [fm fileExistsAtPath:sub isDirectory:&isDir];
+                if (!isDir) continue;
+                for (NSString *n2 in [fm contentsOfDirectoryAtPath:sub error:NULL] ?: @[]) {
+                    NSString *sub2 = [sub stringByAppendingPathComponent:n2];
+                    BOOL d2 = NO;
+                    [fm fileExistsAtPath:sub2 isDirectory:&d2];
+                    if (d2 && [fm fileExistsAtPath:[sub2 stringByAppendingPathComponent:@"manifest.json"]]) [cands addObject:sub2];
+                }
+            }
+        }
+    }
+    if (!cands.count) {
+        if (err) *err = [NSError errorWithDomain:@"MTExtV2" code:3 userInfo:@{NSLocalizedDescriptionKey: @"zip 里找不到 manifest.json"}];
+        return nil;
+    }
+    NSMutableArray *done = [NSMutableArray array];
+    NSMutableArray *fails = [NSMutableArray array];
+    for (NSString *d in cands) {
+        NSError *one = nil;
+        NSDictionary *r = [self installSingleFromDir:d error:&one];
+        if (r) [done addObject:r];
+        else [fails addObject:one.localizedDescription ?: @"未知错误"];
+    }
+    [NSFileManager.defaultManager removeItemAtPath:tmp error:NULL];
+    if (!done.count) {
+        if (err) *err = [NSError errorWithDomain:@"MTExtV2" code:7 userInfo:@{NSLocalizedDescriptionKey: [fails componentsJoinedByString:@"；"]}];
+        return nil;
+    }
+    if (fails.count) NSLog(@"[MTExtV2] 部分扩展安装失败：%@", fails);
+    return done;
+}
+
++ (BOOL)installZipAtPath:(NSString *)zipPath error:(NSError **)err {
+    NSArray *r = [self installArchiveAtPath:zipPath error:err];
+    return r.count > 0;
+}
+
+// 诊断缓存：dylib 的 mtime+大小没变就直接返回上次结果，避免每次进扩展管理都把所有 dylib 重新 dlopen 一遍
+static NSMutableDictionary *gMTDiagCache = nil;
+
 + (NSString *)diagnoseExtension:(NSString *)eid {
+    NSMutableDictionary *cache = nil;
+    @synchronized (self.class) {
+        if (!gMTDiagCache) gMTDiagCache = [NSMutableDictionary dictionary];
+        cache = gMTDiagCache;
+    }
     NSDictionary *e = nil;
     for (NSDictionary *x in [self installed]) if ([x[@"id"] isEqualToString:eid]) { e = x; break; }
     if (!e) return @"扩展未安装（manifest.json 缺失或不是 v2）";
     if (![e[@"entryExists"] boolValue]) return [NSString stringWithFormat:@"dylib 不存在：%@", e[@"dylibPath"]];
     NSString *path = e[@"dylibPath"];
     NSDictionary *attr = [NSFileManager.defaultManager attributesOfItemAtPath:path error:NULL];
+    NSString *sig = [NSString stringWithFormat:@"%@-%@", attr[NSFileModificationDate], attr[NSFileSize]];
+    NSString *cached = nil;
+    @synchronized (self.class) {
+        NSDictionary *c = cache[eid];
+        if (c && [c[@"sig"] isEqualToString:sig]) cached = c[@"res"] ?: @"";
+    }
+    if (cached) return cached.length ? cached : nil;
     NSString *arch = [NSString stringWithFormat:@"dylib 大小 %@", attr[NSFileSize]];
     if (![[NSFileManager defaultManager] isReadableFileAtPath:path]) return @"dylib 不可读（权限问题）";
     NSString *usedPath = nil, *detail = nil;
@@ -437,15 +520,23 @@ static uint32_t rd32(const uint8_t *p) { return (uint32_t)(p[0] | (p[1] << 8) | 
         if ([detail containsString:@"sandbox blocked mmap"]) {
             why = @"\n→ 当前这个 App 是沙盒版（IPA），系统禁止从数据目录映射可执行代码，扩展 dylib 无法进程内加载。换用 deb 版（rootless/roothide，非沙盒）即可，或等我把扩展改成独立进程模式。";
         }
-        return [NSString stringWithFormat:@"dlopen 全部失败（%@）%@\n%@", arch, why, detail ?: @""];
+        NSString *res = [NSString stringWithFormat:@"dlopen 全部失败（%@）%@\n%@", arch, why, detail ?: @""];
+        @synchronized (self.class) { cache[eid] = @{@"sig": sig, @"res": res}; }
+        return res;
     }
     @synchronized (MTExtV2Store.class) {
         if (!gResolvedPaths) gResolvedPaths = [NSMutableDictionary dictionary];
         gResolvedPaths[eid] = usedPath ?: path;
     }
     void *sym = dlsym(h, "MTCreateExtension");
-    if (!sym) { dlclose(h); return [NSString stringWithFormat:@"dylib 里没有 MTCreateExtension 导出（%@）", arch]; }
+    if (!sym) {
+        dlclose(h);
+        NSString *res = [NSString stringWithFormat:@"dylib 里没有 MTCreateExtension 导出（%@）", arch];
+        @synchronized (self.class) { cache[eid] = @{@"sig": sig, @"res": res}; }
+        return res;
+    }
     dlclose(h);
+    @synchronized (self.class) { cache[eid] = @{@"sig": sig, @"res": @""}; }
     return nil;
 }
 
@@ -731,3 +822,290 @@ NSData *MTZipReadEntryNamed(NSString *zipPath, NSString *nameSuffix) {
     }
     return nil;
 }
+
+#pragma mark - 宿主进程 API（v2.1）
+
+#import <sys/socket.h>
+#import <netinet/in.h>
+#import <arpa/inet.h>
+#import <signal.h>
+#import <spawn.h>
+
+extern char **environ;
+
+// ObjC 壳：主可执行文件的符号默认不导出，但 ObjC 类名一定会注册进运行时。
+// 扩展用 NSClassFromString(@"MTExtProcessHost") 拿到它再 objc_msgSend 调用即可。
+@interface MTExtProcessHost : NSObject
+@end
+
+@implementation MTExtProcessHost
++ (BOOL)available { return MTExtProcessAvailable(); }
++ (NSString *)unavailableReason { return MTExtProcessUnavailableReason(); }
++ (NSInteger)spawn:(NSString *)exe args:(NSArray *)args env:(NSDictionary *)env cwd:(NSString *)cwd out:(id)out exit:(id)exitBlk {
+    return (NSInteger)MTExtProcessSpawn(exe, args, env, cwd, (MTExtProcessOutputBlock)out, (MTExtProcessExitBlock)exitBlk);
+}
++ (void)kill:(NSInteger)pid { MTExtProcessKill((pid_t)pid); }
++ (BOOL)portOpen:(NSInteger)port { return MTExtPortIsListening(port); }
+@end
+
+static NSInteger gMTProcProbe = -1;      // -1 未探测, 0 不可用, 1 可用
+static NSString *gMTProcProbeWhy = nil;
+
+// 探测策略（原来用 /usr/bin/true 探测，iOS 上根本没这个文件，ENOENT 被误判成“沙盒”，
+// rootless 装了 deb 也会报“只能用 deb 版”）：
+// 1) 先拿自己的可执行文件加 -MTExtSpawnProbe 参数试跑（main.m 里见到这个参数立即 return 0），
+//    沙盒里 exec 自己的二进制会被拒（EPERM/EACCES），非沙盒能正常跑起来。
+// 2) 自探测失败再试几个真实存在的 shell / true 路径。只有 EPERM/EACCES 才算沙盒，
+//    ENOENT 之类一律不算。
+static BOOL MTProbeTrySpawn(NSString *path, NSArray<NSString *> *args, NSString **why) {
+    if (!path.length) return NO;
+    if (access(path.fileSystemRepresentation, X_OK) != 0) return NO;
+    NSMutableArray *a = [NSMutableArray arrayWithObject:path];
+    [a addObjectsFromArray:args ?: @[]];
+    NSUInteger n = a.count;
+    char **argv = calloc(n + 1, sizeof(char *));
+    for (NSUInteger i = 0; i < n; i++) argv[i] = (char *)[(NSString *)a[i] UTF8String];
+    argv[n] = NULL;
+    pid_t pid = 0;
+    int rc = posix_spawn(&pid, path.fileSystemRepresentation, NULL, NULL, argv, environ);
+    free(argv);
+    if (rc == 0) {
+        int st = 0;
+        waitpid(pid, &st, 0);
+        return YES;
+    }
+    if (why) {
+        if (rc == EPERM || rc == EACCES)
+            *why = [NSString stringWithFormat:@"沙盒拒绝创建子进程（errno %d），这是 IPA/TrollStore 版的限制", rc];
+        else
+            *why = [NSString stringWithFormat:@"无法启动 %@（errno %d）", path.lastPathComponent, rc];
+    }
+    return NO;
+}
+
+BOOL MTExtProcessAvailable(void) {
+    if (gMTProcProbe >= 0) return gMTProcProbe == 1;
+
+    NSString *why = nil;
+    // 1) 自探测：跑自己一次，正常退出即说明 exec 可用
+    NSString *selfExe = NSBundle.mainBundle.executablePath;
+    if (MTProbeTrySpawn(selfExe, @[@"-MTExtSpawnProbe"], &why)) {
+        gMTProcProbe = 1; gMTProcProbeWhy = nil;
+        return YES;
+    }
+    // 2) 自探测失败：再找设备上真实存在的 shell / true
+    NSArray *cands = @[@"/var/jb/usr/bin/sh", @"/var/jb/bin/sh", @"/bin/sh", @"/usr/bin/sh", @"/usr/bin/true"];
+    for (NSString *p in cands) {
+        NSString *w2 = nil;
+        NSArray *args = [p hasSuffix:@"/sh"] ? @[@"-c", @"exit 0"] : @[];
+        if (MTProbeTrySpawn(p, args, &w2)) {
+            gMTProcProbe = 1; gMTProcProbeWhy = nil;
+            return YES;
+        }
+        if (!why) why = w2;
+    }
+    gMTProcProbe = 0;
+    gMTProcProbeWhy = why ?: @"无法创建子进程";
+    return NO;
+}
+
+NSString *MTExtProcessUnavailableReason(void) {
+    MTExtProcessAvailable();
+    return gMTProcProbeWhy ?: @"";
+}
+
+pid_t MTExtProcessSpawn(NSString *exe, NSArray<NSString *> *args, NSDictionary<NSString *, NSString *> *envAdditions, NSString *cwd, MTExtProcessOutputBlock onOutput, MTExtProcessExitBlock onExit) {
+    if (!exe.length) return -1;
+    if (!MTExtProcessAvailable()) {
+        if (onOutput) onOutput(@"宿主处于沙盒环境，无法创建子进程（需要 deb 版）", YES);
+        if (onExit) onExit(-2);
+        return -1;
+    }
+    int pfd[2];
+    if (pipe(pfd) != 0) return -1;
+
+    // 组装 argv
+    NSMutableArray *full = [NSMutableArray arrayWithObject:exe];
+    for (NSString *a in args) [full addObject:a ?: @""];
+    NSUInteger n = full.count;
+    char **cargv = calloc(n + 1, sizeof(char *));
+    for (NSUInteger i = 0; i < n; i++) cargv[i] = (char *)[(NSString *)full[i] UTF8String];
+    cargv[n] = NULL;
+
+    // 环境：继承宿主，再叠加扩展给的；cwd 通过 PWD 提示（posix_spawn 无法 chdir）
+    NSMutableDictionary *envd = [NSMutableDictionary dictionary];
+    for (char **e = environ; e && *e; e++) {
+        NSString *kv = [NSString stringWithUTF8String:*e];
+        NSRange r = [kv rangeOfString:@"="];
+        if (r.location != NSNotFound) envd[[kv substringToIndex:r.location]] = [kv substringFromIndex:r.location + 1];
+    }
+    if (cwd.length) envd[@"PWD"] = cwd;
+    for (NSString *k in envAdditions) envd[k] = envAdditions[k];
+    NSMutableArray *envArr = [NSMutableArray array];
+    for (NSString *k in envd) [envArr addObject:[NSString stringWithFormat:@"%@=%@", k, envd[k]]];
+    char **cenv = calloc(envArr.count + 1, sizeof(char *));
+    for (NSUInteger i = 0; i < envArr.count; i++) cenv[i] = (char *)[(NSString *)envArr[i] UTF8String];
+    cenv[envArr.count] = NULL;
+
+    posix_spawn_file_actions_t fa;
+    posix_spawn_file_actions_init(&fa);
+    posix_spawn_file_actions_adddup2(&fa, pfd[1], STDOUT_FILENO);
+    posix_spawn_file_actions_adddup2(&fa, pfd[1], STDERR_FILENO);
+    posix_spawn_file_actions_addclose(&fa, pfd[0]);
+    posix_spawn_file_actions_addclose(&fa, pfd[1]);
+
+    pid_t pid = 0;
+    int rc = posix_spawn(&pid, exe.fileSystemRepresentation, &fa, NULL, cargv, cenv);
+    posix_spawn_file_actions_destroy(&fa);
+    free(cargv); free(cenv);
+    close(pfd[1]);
+    if (rc != 0) {
+        close(pfd[0]);
+        if (onOutput) onOutput([NSString stringWithFormat:@"启动失败：%@ (errno %d)", exe, rc], YES);
+        if (onExit) onExit(-1);
+        return -1;
+    }
+
+    // 流式读 stdout/stderr，并等退出
+    int rfd = pfd[0];
+    pid_t cpid = pid;
+    dispatch_queue_t q = dispatch_queue_create("mt.extproc", DISPATCH_QUEUE_SERIAL);
+    dispatch_source_t src = dispatch_source_create(DISPATCH_SOURCE_TYPE_READ, (uintptr_t)rfd, 0, q);
+    dispatch_source_set_event_handler(src, ^{
+        uint8_t buf[4096];
+        ssize_t r = read(rfd, buf, sizeof(buf));
+        if (r > 0) {
+            NSString *s = [[NSString alloc] initWithBytes:buf length:(NSUInteger)r encoding:NSUTF8StringEncoding];
+            if (!s) s = [[NSString alloc] initWithBytes:buf length:(NSUInteger)r encoding:NSISOLatin1StringEncoding];
+            if (s.length && onOutput) onOutput(s, NO);
+        } else {
+            dispatch_source_cancel(src);
+        }
+    });
+    dispatch_source_set_cancel_handler(src, ^{
+        close(rfd);
+        int st = 0;
+        waitpid(cpid, &st, 0);
+        int code = WIFEXITED(st) ? WEXITSTATUS(st) : -1;
+        if (onExit) onExit(code);
+    });
+    dispatch_resume(src);
+    return pid;
+}
+
+void MTExtProcessKill(pid_t pid) {
+    if (pid <= 0) return;
+    kill(pid, SIGTERM);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_global_queue(0, 0), ^{
+        kill(pid, SIGKILL);
+    });
+}
+
+BOOL MTExtPortIsListening(NSInteger port) {
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return NO;
+    struct sockaddr_in a; memset(&a, 0, sizeof(a));
+    a.sin_family = AF_INET;
+    a.sin_port = htons((uint16_t)port);
+    a.sin_addr.s_addr = inet_addr("127.0.0.1");
+    BOOL ok = (connect(fd, (struct sockaddr *)&a, sizeof(a)) == 0);
+    close(fd);
+    return ok;
+}
+
+#pragma mark - 扩展权限：联网 / 终端（用户手动同意，不是 manifest 里写一句）
+
+static NSString *MTConsentKey(NSString *eid, NSString *cap) {
+    return [NSString stringWithFormat:@"mt_ext_consent.%@.%@", eid.lowercaseString, cap.lowercaseString];
+}
+
+BOOL MTExtConsentGranted(NSString *eid, NSString *cap) {
+    if (!eid.length || !cap.length) return NO;
+    id v = [[NSUserDefaults standardUserDefaults] objectForKey:MTConsentKey(eid, cap)];
+    return v ? [v boolValue] : NO;
+}
+
+static UIViewController *MTTopViewController(void) {
+    UIWindow *win = nil;
+    for (UIWindow *w in UIApplication.sharedApplication.windows) if (w.isKeyWindow) { win = w; break; }
+    UIViewController *vc = win.rootViewController;
+    while (vc.presentedViewController) vc = vc.presentedViewController;
+    return vc;
+}
+
+static NSString *MTCapabilityTitle(NSString *cap) {
+    if ([cap isEqualToString:@"network"]) return @"网络访问";
+    if ([cap isEqualToString:@"terminal"]) return @"运行终端命令";
+    return cap;
+}
+
+void MTExtRequestConsent(NSString *eid, NSString *cap, NSString *reason, void (^callback)(BOOL)) {
+    if (!eid.length || !cap.length) { if (callback) callback(NO); return; }
+    if (MTExtConsentGranted(eid, cap)) { if (callback) dispatch_async(dispatch_get_main_queue(), ^{ callback(YES); }); return; }
+    dispatch_async(dispatch_get_main_queue(), ^{
+        NSString *title = [NSString stringWithFormat:@"“%@”请求%@权限", eid];
+        NSString *msg = reason.length ? reason : [NSString stringWithFormat:@"这个扩展要使用%@。拒绝后相关功能不可用，直到你重新允许。", MTCapabilityTitle(cap)];
+        UIAlertController *ac = [UIAlertController alertControllerWithTitle:title message:msg preferredStyle:UIAlertControllerStyleAlert];
+        [ac addAction:[UIAlertAction actionWithTitle:@"拒绝" style:UIAlertActionStyleCancel handler:^(UIAlertAction *a) {
+            [[NSUserDefaults standardUserDefaults] setBool:NO forKey:MTConsentKey(eid, cap)];
+            if (callback) callback(NO);
+        }]];
+        [ac addAction:[UIAlertAction actionWithTitle:@"允许" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
+            [[NSUserDefaults standardUserDefaults] setBool:YES forKey:MTConsentKey(eid, cap)];
+            if (callback) callback(YES);
+        }]];
+        UIViewController *top = MTTopViewController();
+        if (!top) { if (callback) callback(NO); return; }
+        [top presentViewController:ac animated:YES completion:nil];
+    });
+}
+
+static NSString *MTShellPath(void) {
+    NSArray *c = @[@"/var/jb/usr/bin/bash", @"/var/jb/bin/sh", @"/var/jb/usr/bin/sh",
+                   @"/bin/sh", @"/usr/bin/sh", @"/var/jb/usr/bin/zsh"];
+    for (NSString *p in c) if ([[NSFileManager defaultManager] isExecutableFileAtPath:p]) return p;
+    return nil;
+}
+
+pid_t MTExtShellRun(NSString *eid, NSString *command, NSString *cwd,
+                    MTExtProcessOutputBlock onOutput, MTExtProcessExitBlock onExit) {
+    if (!command.length) return -1;
+    if (!MTExtConsentGranted(eid, @"terminal")) {
+        if (onOutput) onOutput(@"扩展没有终端权限：先调用 MTExtRequestConsent(extID, @\"terminal\", …) 让用户同意。", YES);
+        if (onExit) onExit(-3);
+        return -1;
+    }
+    NSString *shell = MTShellPath();
+    if (!shell.length) {
+        if (onOutput) onOutput(@"设备上找不到 shell（/var/jb/usr/bin/bash 等）", YES);
+        if (onExit) onExit(-4);
+        return -1;
+    }
+    return MTExtProcessSpawn(shell, @[@"-lc", command], nil, cwd ?: @"/var/mobile", onOutput, onExit);
+}
+
+void MTExtNetRequest(NSString *eid, NSString *urlString, NSDictionary<NSString *, NSString *> *headers,
+                     void (^done)(NSData *, NSInteger, NSError *)) {
+    NSURL *url = [NSURL URLWithString:urlString ?: @""];
+    if (!url || !url.scheme.length) {
+        if (done) dispatch_async(dispatch_get_main_queue(), ^{ done(nil, 0, [NSError errorWithDomain:@"MTExtNet" code:1 userInfo:@{NSLocalizedDescriptionKey: @"URL 不合法"}]); });
+        return;
+    }
+    void (^fire)(void) = ^{
+        NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
+        req.timeoutInterval = 20;
+        for (NSString *k in headers) [req setValue:headers[k] forHTTPHeaderField:k];
+        NSURLSessionDataTask *t = [[NSURLSession sharedSession] dataTaskWithRequest:req
+            completionHandler:^(NSData *d, NSURLResponse *r, NSError *e) {
+                NSInteger code = [(NSHTTPURLResponse *)r statusCode];
+                dispatch_async(dispatch_get_main_queue(), ^{ if (done) done(d, code, e); });
+            }];
+        [t resume];
+    };
+    if (MTExtConsentGranted(eid, @"network")) { fire(); return; }
+    MTExtRequestConsent(eid, @"network", @"扩展需要联网下载或上传数据。", ^(BOOL granted) {
+        if (granted) fire();
+        else if (done) done(nil, 0, [NSError errorWithDomain:@"MTExtNet" code:2 userInfo:@{NSLocalizedDescriptionKey: @"用户拒绝了网络访问"}]);
+    });
+}
+

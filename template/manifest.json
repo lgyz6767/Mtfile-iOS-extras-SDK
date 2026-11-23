@@ -1,5 +1,5 @@
 {
-  "framework": "v2.0.0",
+  "framework": "v2.1.0",
   "id": "com.example.mtext.template",
   "name": "扩展模板",
   "version": "1.0.0",
@@ -9,8 +9,17 @@
   "sidebar": {
     "category": "示例分类",
     "items": [
-      { "id": "main", "title": "主页", "icon": "square.grid.2x2" },
-      { "id": "about", "title": "关于", "icon": "info.circle" }
+      {
+        "id": "main",
+        "title": "主页",
+        "icon": "square.grid.2x2"
+      },
+      {
+        "id": "about",
+        "title": "关于",
+        "icon": "info.circle"
+      }
     ]
-  }
+  },
+  "iconImage": "icon.png"
 }
