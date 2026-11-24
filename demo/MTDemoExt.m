@@ -589,6 +589,7 @@ static NSArray<NSDictionary *> *MTZipEntries(NSData *d) {
         @[@"cube.transparent", @"3D 演示", @"SceneKit：金属环面结 + 环绕方块，可拖动旋转", @"threed"],
         @[@"arrow.down.circle", @"多线程下载", @"4 条 Range 请求并发，落地后合并，进度按字节累加", @"dl"],
         @[@"terminal", @"终端", @"MTExtShellRun 走 bash -lc，输入框 + 快捷命令 + 退出码", @"term"],
+        @[@"square.grid.3x3.fill", @"2048 小游戏", @"棋盘、滑动合并、计分、最高分持久化（原独立 2048 扩展已并入）", @"g2048"],
     ];
 
     UIView *hero = [[UIView alloc] initWithFrame:CGRectMake(0, 0, self.view.bounds.size.width, 128)];
@@ -646,6 +647,7 @@ static NSArray<NSDictionary *> *MTZipEntries(NSData *d) {
     if ([key isEqualToString:@"threed"]){ [self push:[[NSClassFromString(@"MTDemo3DVC") alloc] init]]; return; }
     if ([key isEqualToString:@"dl"])     { [self push:[[NSClassFromString(@"MTDemoDownloadVC") alloc] init]]; return; }
     if ([key isEqualToString:@"term"])   { [self push:[[NSClassFromString(@"MTDemoTermVC") alloc] init]]; return; }
+    if ([key isEqualToString:@"g2048"])  { [self push:[[NSClassFromString(@"MT2048ViewController") alloc] init]]; return; }
     if ([key isEqualToString:@"editor"]) {
         MTHostAlert(@"编辑器接管", @"manifest 里声明 editorExtensions 后，在文件列表点 .md / .txt 就会进入扩展自己的编辑器，不再用宿主的内置编辑器。随便找一个 Markdown 文件试试。");
     }
@@ -1073,6 +1075,319 @@ static void loadCaps(void) {
 }
 @end
 
+#import <UIKit/UIKit.h>
+
+#pragma mark - 2048 小游戏（原 game2048 扩展，合并进 demo）
+
+#pragma mark - 棋盘
+
+@interface MT2048BoardView : UIView
+@property (nonatomic, copy) void (^onScore)(NSInteger score, NSInteger best);
+@property (nonatomic, copy) void (^onGameOver)(void);
+@property (nonatomic, readonly) NSInteger score;
+@property (nonatomic, readonly) NSInteger best;
+- (void)newGame;
+- (void)swipe:(UISwipeGestureRecognizerDirection)dir;
+@end
+
+@implementation MT2048BoardView {
+    NSMutableArray<NSNumber *> *_grid;   // 16 个格子，0 表示空
+    UILabel *_tiles[16];
+    NSInteger _score;
+    NSInteger _best;
+}
+
+- (instancetype)initWithFrame:(CGRect)frame {
+    if ((self = [super initWithFrame:frame])) {
+        _grid = [NSMutableArray arrayWithCapacity:16];
+        for (NSInteger i = 0; i < 16; i++) [_grid addObject:@0];
+        self.backgroundColor = [UIColor colorWithRed:0.98 green:0.96 blue:0.93 alpha:1.0];
+        self.layer.cornerRadius = 10;
+        self.clipsToBounds = YES;
+        for (NSInteger i = 0; i < 16; i++) {
+            UILabel *l = [UILabel new];
+            l.textAlignment = NSTextAlignmentCenter;
+            l.font = [UIFont boldSystemFontOfSize:20];
+            l.layer.cornerRadius = 6;
+            l.clipsToBounds = YES;
+            l.adjustsFontSizeToFitWidth = YES;
+            l.minimumScaleFactor = 0.5;
+            [self addSubview:l];
+            _tiles[i] = l;
+        }
+        NSNumber *b = [[NSUserDefaults standardUserDefaults] objectForKey:@"mt2048_best"];
+        _best = b ? [b integerValue] : 0;
+        [self newGame];
+        [self addSwipeTargets];
+    }
+    return self;
+}
+
+- (void)addSwipeTargets {
+    NSArray *dirs = @[@(UISwipeGestureRecognizerDirectionLeft), @(UISwipeGestureRecognizerDirectionRight),
+                      @(UISwipeGestureRecognizerDirectionUp), @(UISwipeGestureRecognizerDirectionDown)];
+    for (NSNumber *d in dirs) {
+        UISwipeGestureRecognizer *g = [[UISwipeGestureRecognizer alloc] initWithTarget:self action:@selector(handleSwipe:)];
+        g.direction = d.integerValue;
+        [self addGestureRecognizer:g];
+    }
+}
+
+- (void)handleSwipe:(UISwipeGestureRecognizer *)g { [self swipe:g.direction]; }
+
+- (NSInteger)score { return _score; }
+- (NSInteger)best { return _best; }
+
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    CGFloat b = self.bounds.size.width;
+    CGFloat gap = 8, pad = 10;
+    CGFloat size = (b - pad * 2 - gap * 3) / 4.0;
+    for (NSInteger i = 0; i < 16; i++) {
+        NSInteger r = i / 4, c = i % 4;
+        _tiles[i].frame = CGRectMake(pad + c * (size + gap), pad + r * (size + gap), size, size);
+    }
+    [self refresh];
+}
+
+static UIColor *TileColor(NSUInteger v) {
+    switch (v) {
+        case 2:    return [UIColor colorWithRed:0.93 green:0.89 blue:0.85 alpha:1];
+        case 4:    return [UIColor colorWithRed:0.93 green:0.88 blue:0.78 alpha:1];
+        case 8:    return [UIColor colorWithRed:0.95 green:0.69 blue:0.47 alpha:1];
+        case 16:   return [UIColor colorWithRed:0.96 green:0.58 blue:0.39 alpha:1];
+        case 32:   return [UIColor colorWithRed:0.96 green:0.49 blue:0.37 alpha:1];
+        case 64:   return [UIColor colorWithRed:0.96 green:0.37 blue:0.23 alpha:1];
+        case 128:  return [UIColor colorWithRed:0.93 green:0.80 blue:0.35 alpha:1];
+        case 256:  return [UIColor colorWithRed:0.93 green:0.77 blue:0.28 alpha:1];
+        case 512:  return [UIColor colorWithRed:0.93 green:0.72 blue:0.20 alpha:1];
+        case 1024: return [UIColor colorWithRed:0.93 green:0.66 blue:0.16 alpha:1];
+        case 2048: return [UIColor colorWithRed:0.93 green:0.59 blue:0.12 alpha:1];
+        default:   return [UIColor colorWithRed:0.62 green:0.60 blue:0.58 alpha:1];
+    }
+}
+
+- (void)refresh {
+    for (NSInteger i = 0; i < 16; i++) {
+        NSUInteger v = [_grid[i] unsignedIntegerValue];
+        UILabel *l = _tiles[i];
+        if (v == 0) {
+            l.text = @"";
+            l.backgroundColor = [UIColor colorWithRed:0.87 green:0.84 blue:0.80 alpha:1];
+        } else {
+            l.text = [NSString stringWithFormat:@"%lu", (unsigned long)v];
+            l.backgroundColor = TileColor(v);
+            l.textColor = v <= 4 ? [UIColor colorWithWhite:0.28 alpha:1] : UIColor.whiteColor;
+            l.font = [UIFont boldSystemFontOfSize:(v >= 1024 ? 16 : (v >= 128 ? 18 : 20))];
+        }
+    }
+}
+
+- (void)newGame {
+    for (NSInteger i = 0; i < 16; i++) _grid[i] = @0;
+    _score = 0;
+    [self spawn];
+    [self spawn];
+    [self refresh];
+    if (self.onScore) self.onScore(_score, _best);
+}
+
+- (NSArray<NSNumber *> *)emptyCells {
+    NSMutableArray *e = [NSMutableArray array];
+    for (NSInteger i = 0; i < 16; i++) if ([_grid[i] integerValue] == 0) [e addObject:@(i)];
+    return e;
+}
+
+- (void)spawn {
+    NSArray *e = [self emptyCells];
+    if (!e.count) return;
+    NSInteger idx = [e[arc4random_uniform((uint32_t)e.count)] integerValue];
+    _grid[idx] = (arc4random_uniform(10) == 0) ? @4 : @2;
+}
+
+// 把一行（4 个数）向左合并，返回新行与得分
+static NSArray *MergeLine(NSArray<NSNumber *> *line, NSInteger *gained) {
+    NSMutableArray *out = [NSMutableArray array];
+    NSMutableArray *nonzero = [NSMutableArray array];
+    for (NSNumber *n in line) if (n.integerValue != 0) [nonzero addObject:n];
+    NSInteger i = 0;
+    while (i < (NSInteger)nonzero.count) {
+        NSInteger v = [(NSNumber *)nonzero[i] integerValue];
+        if (i + 1 < (NSInteger)nonzero.count && [(NSNumber *)nonzero[i + 1] integerValue] == v) {
+            [out addObject:@(v * 2)];
+            if (gained) *gained += v * 2;
+            i += 2;
+        } else {
+            [out addObject:@(v)];
+            i += 1;
+        }
+    }
+    while (out.count < 4) [out addObject:@0];
+    return out;
+}
+
+- (BOOL)moveDirection:(UISwipeGestureRecognizerDirection)dir {
+    BOOL moved = NO;
+    NSInteger gained = 0;
+    for (NSInteger i = 0; i < 4; i++) {
+        NSMutableArray *line = [NSMutableArray array];
+        for (NSInteger j = 0; j < 4; j++) {
+            NSInteger idx;
+            if (dir == UISwipeGestureRecognizerDirectionLeft)  idx = i * 4 + j;
+            else if (dir == UISwipeGestureRecognizerDirectionRight) idx = i * 4 + (3 - j);
+            else if (dir == UISwipeGestureRecognizerDirectionUp) idx = j * 4 + i;
+            else idx = (3 - j) * 4 + i;
+            [line addObject:_grid[idx]];
+        }
+        NSArray *merged = MergeLine(line, &gained);
+        for (NSInteger j = 0; j < 4; j++) {
+            NSInteger idx;
+            if (dir == UISwipeGestureRecognizerDirectionLeft)  idx = i * 4 + j;
+            else if (dir == UISwipeGestureRecognizerDirectionRight) idx = i * 4 + (3 - j);
+            else if (dir == UISwipeGestureRecognizerDirectionUp) idx = j * 4 + i;
+            else idx = (3 - j) * 4 + i;
+            if (![_grid[idx] isEqualToNumber:merged[j]]) moved = YES;
+            _grid[idx] = merged[j];
+        }
+    }
+    if (moved) {
+        _score += gained;
+        [self spawn];
+        [self refresh];
+        if (_score > _best) {
+            _best = _score;
+            [[NSUserDefaults standardUserDefaults] setObject:@(_best) forKey:@"mt2048_best"];
+        }
+        if (self.onScore) self.onScore(_score, _best);
+        if (![self emptyCells].count && ![self canMerge]) {
+            if (self.onGameOver) self.onGameOver();
+        }
+    }
+    return moved;
+}
+
+- (BOOL)canMerge {
+    for (NSInteger r = 0; r < 4; r++) {
+        for (NSInteger c = 0; c < 4; c++) {
+            NSInteger v = [_grid[r * 4 + c] integerValue];
+            if (c < 3 && [_grid[r * 4 + c + 1] integerValue] == v) return YES;
+            if (r < 3 && [_grid[(r + 1) * 4 + c] integerValue] == v) return YES;
+        }
+    }
+    return NO;
+}
+
+- (void)swipe:(UISwipeGestureRecognizerDirection)dir {
+    if (![self moveDirection:dir]) return;
+    // 轻反馈：整盘轻微回弹，说明这一下吃到了
+    [UIView animateWithDuration:0.08 animations:^{
+        self.transform = CGAffineTransformMakeScale(0.985, 0.985);
+    } completion:^(BOOL f) {
+        [UIView animateWithDuration:0.10 animations:^{ self.transform = CGAffineTransformIdentity; }];
+    }];
+}
+
+@end
+
+#pragma mark - 页面
+
+@interface MT2048ViewController : UIViewController
+@end
+
+@implementation MT2048ViewController {
+    MT2048BoardView *_board;
+    UILabel *_scoreLabel;
+    UILabel *_bestLabel;
+}
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.title = @"2048";
+    self.view.backgroundColor = [UIColor colorWithRed:0.98 green:0.96 blue:0.93 alpha:1.0];
+
+    UILabel *title = [UILabel new];
+    title.text = @"2048";
+    title.font = [UIFont boldSystemFontOfSize:28];
+    title.textColor = [UIColor colorWithRed:0.47 green:0.43 blue:0.40 alpha:1.0];
+    title.frame = CGRectMake(16, 8, 100, 34);
+    [self.view addSubview:title];
+
+    _scoreLabel = [self badgeWithTitle:@"分数"];
+    _bestLabel = [self badgeWithTitle:@"最高"];
+    [self.view addSubview:_scoreLabel];
+    [self.view addSubview:_bestLabel];
+
+    UIButton *restart = [UIButton buttonWithType:UIButtonTypeSystem];
+    [restart setTitle:@"重开" forState:UIControlStateNormal];
+    restart.backgroundColor = [UIColor colorWithRed:0.55 green:0.51 blue:0.47 alpha:1.0];
+    [restart setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
+    restart.titleLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightMedium];
+    restart.layer.cornerRadius = 6;
+    [restart addTarget:self action:@selector(restart) forControlEvents:UIControlEventTouchUpInside];
+    restart.frame = CGRectMake(0, 8, 56, 34);
+    [self.view addSubview:restart];
+
+    _board = [[MT2048BoardView alloc] initWithFrame:CGRectZero];
+    [self.view addSubview:_board];
+    __weak typeof(self) ws = self;
+    _board.onScore = ^(NSInteger score, NSInteger best) {
+        typeof(self) ss = ws; if (!ss) return;
+        ss->_scoreLabel.text = [NSString stringWithFormat:@"分数\n%ld", (long)score];
+        ss->_bestLabel.text = [NSString stringWithFormat:@"最高\n%ld", (long)best];
+    };
+    _board.onGameOver = ^{
+        typeof(self) ss = ws; if (!ss) return;
+        UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"游戏结束"
+                                                                   message:[NSString stringWithFormat:@"本局得分 %ld，最高 %ld", (long)ss->_board.score, (long)ss->_board.best]
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+        [ac addAction:[UIAlertAction actionWithTitle:@"重开" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) { [ss->_board newGame]; }]];
+        [ac addAction:[UIAlertAction actionWithTitle:@"关闭" style:UIAlertActionStyleCancel handler:nil]];
+        [ss presentViewController:ac animated:YES completion:nil];
+    };
+    _scoreLabel.text = @"分数\n0";
+    _bestLabel.text = [NSString stringWithFormat:@"最高\n%ld", (long)_board.best];
+    [self.view addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(noop)]];
+}
+
+- (void)noop {}
+
+- (UILabel *)badgeWithTitle:(NSString *)title {
+    UILabel *l = [UILabel new];
+    l.numberOfLines = 2;
+    l.textAlignment = NSTextAlignmentCenter;
+    l.font = [UIFont systemFontOfSize:11];
+    l.textColor = [UIColor colorWithRed:0.47 green:0.43 blue:0.40 alpha:1.0];
+    l.backgroundColor = [UIColor colorWithRed:0.93 green:0.90 blue:0.86 alpha:1.0];
+    l.layer.cornerRadius = 6;
+    l.clipsToBounds = YES;
+    l.text = title;
+    return l;
+}
+
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    UIEdgeInsets si = UIEdgeInsetsZero;
+    if (@available(iOS 11.0, *)) si = self.view.safeAreaInsets;
+    CGFloat W = self.view.bounds.size.width;
+    CGFloat top = si.top + 52;
+    CGFloat boardW = MIN(W - 32, self.view.bounds.size.height - top - si.bottom - 32);
+    _board.frame = CGRectMake((W - boardW) / 2.0, top + 8, boardW, boardW);
+    CGFloat badgeW = 64;
+    _scoreLabel.frame = CGRectMake(W - badgeW * 2 - 44, 8, badgeW, 42);
+    _bestLabel.frame = CGRectMake(W - badgeW - 32, 8, badgeW, 42);
+    for (UIView *v in self.view.subviews) {
+        if ([v isKindOfClass:[UIButton class]] && CGRectGetWidth(v.frame) == 56) {
+            v.frame = CGRectMake(16, 60, 56, 34);
+        }
+    }
+}
+
+- (void)restart { [_board newGame]; }
+
+@end
+
+#pragma mark - 扩展入口
+
 @interface MTDemoExt : NSObject <MTExtV2Extension>
 @end
 
@@ -1089,6 +1404,7 @@ static void loadCaps(void) {
     if ([itemID isEqualToString:@"threed"]) return [MTDemo3DVC new];
     if ([itemID isEqualToString:@"download"]) return [MTDemoDownloadVC new];
     if ([itemID isEqualToString:@"term"])  return [MTDemoTermVC new];
+    if ([itemID isEqualToString:@"g2048"]) return [MT2048ViewController new];
     if ([itemID isEqualToString:@"lab"])   return [MTDemoLabVC new];
     return [MTDemoHomeVC new];
 }
