@@ -2,9 +2,9 @@
   "framework": "v2.1.0",
   "id": "com.lgyz.mt.ext.demo",
   "name": "扩展能力演示",
-  "version": "1.0.4",
+  "version": "1.1.0",
   "author": "lgyz",
-  "description": "一个不依赖任何外部工具的演示扩展：注入侧栏分类、四页自绘 UI、调用宿主主题/波纹/弹窗/HUD、接管 Markdown 编辑器，并自带 zip 解析器。用来展示 v2 扩展框架当前能做到的上限。",
+  "description": "演示扩展（v2.1）：侧栏分类、四页自绘 UI、宿主主题/波纹/弹窗/HUD、zip 解析、编辑器接管，外加 3D（SceneKit）、四线程 Range 下载、走 bash 的终端，以及联网/终端权限弹窗。",
   "dylib": "MTDemoExt.dylib",
   "editorExtensions": [
     "md",
@@ -38,6 +38,21 @@
         "id": "caps",
         "title": "权限 · 终端 · 网络",
         "icon": "lock.shield"
+      },
+      {
+        "id": "threed",
+        "title": "3D 演示",
+        "icon": "cube.transparent"
+      },
+      {
+        "id": "download",
+        "title": "多线程下载",
+        "icon": "arrow.down.circle"
+      },
+      {
+        "id": "term",
+        "title": "终端",
+        "icon": "terminal"
       }
     ]
   },

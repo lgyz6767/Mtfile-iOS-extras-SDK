@@ -45,6 +45,8 @@ Bundle.mtextra
 
 安装目录：`/var/mobile/Documents/MTFile/Extensions2/<id>/`。
 
+官方演示包就是这样打的：`MTFile-Demo-Bundle.mtextra` 里有 `demo/`（能力演示 + 3D + 多线程下载 + 终端 + 权限页）和 `game2048/` 两套，装一次两个都进侧栏。
+
 ---
 
 ## 3. manifest.json
@@ -215,7 +217,8 @@ manifest 写了 `editors`/`editorExtensions` 才参与接管。多个扩展抢�
 | 终端调用返回 -1 | 用户没允许 terminal；或当前是 IPA/沙盒版；或设备没有 `/var/jb` 的 bash/sh |
 | 联网一直失败码 2 | 用户点了「拒绝」 |
 | 编辑器不生效 | 没声明后缀 / 用户关掉了该格式 / 别的扩展先接管 |
-| 页面顶部被压住 | 自定义 VC 设 `edgesForExtendedLayout = UIRectEdgeNone` |
+| 页面顶部被压住 | 自定义 VC 设 `edgesForExtendedLayout = UIRectEdgeNone`，并补 `safeAreaInsets.top` |
+| 下拉后内容叠在顶栏 | 同时挂了两套下拉手势 / header 越界 / 装饰层 `clipsToBounds=NO`，见第 9 节 |
 
 ---
 

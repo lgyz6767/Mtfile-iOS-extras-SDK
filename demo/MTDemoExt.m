@@ -586,6 +586,9 @@ static NSArray<NSDictionary *> *MTZipEntries(NSData *d) {
         @[@"hourglass", @"宿主 HUD",    @"调 MTProgressHUD 显示进度框，扩展无需自带 UI", @"hud"],
         @[@"wand.and.stars", @"撑满一屏的动效", @"纯 CoreAnimation：光斑、脉冲、逐条滑入", @"anim"],
         @[@"doc.text", @"接管编辑器",   @"manifest 声明 md/txt，打开即用扩展自己的编辑器", @"editor"],
+        @[@"cube.transparent", @"3D 演示", @"SceneKit：金属环面结 + 环绕方块，可拖动旋转", @"threed"],
+        @[@"arrow.down.circle", @"多线程下载", @"4 条 Range 请求并发，落地后合并，进度按字节累加", @"dl"],
+        @[@"terminal", @"终端", @"MTExtShellRun 走 bash -lc，输入框 + 快捷命令 + 退出码", @"term"],
     ];
 
     UIView *hero = [[UIView alloc] initWithFrame:CGRectMake(0, 0, self.view.bounds.size.width, 128)];
@@ -640,6 +643,9 @@ static NSArray<NSDictionary *> *MTZipEntries(NSData *d) {
     if ([key isEqualToString:@"alert"]) { MTHostAlert(@"来自扩展", @"这条弹窗是扩展通过 objc runtime 调宿主 MTAlertCenter 弹出来的。"); return; }
     if ([key isEqualToString:@"hud"])   { MTHostHUD(@"扩展正在干活…"); return; }
     if ([key isEqualToString:@"anim"])  { [self push:[MTDemoAnimVC new]]; return; }
+    if ([key isEqualToString:@"threed"]){ [self push:[[NSClassFromString(@"MTDemo3DVC") alloc] init]]; return; }
+    if ([key isEqualToString:@"dl"])     { [self push:[[NSClassFromString(@"MTDemoDownloadVC") alloc] init]]; return; }
+    if ([key isEqualToString:@"term"])   { [self push:[[NSClassFromString(@"MTDemoTermVC") alloc] init]]; return; }
     if ([key isEqualToString:@"editor"]) {
         MTHostAlert(@"编辑器接管", @"manifest 里声明 editorExtensions 后，在文件列表点 .md / .txt 就会进入扩展自己的编辑器，不再用宿主的内置编辑器。随便找一个 Markdown 文件试试。");
     }
@@ -750,6 +756,323 @@ static void loadCaps(void) {
 }
 @end
 
+
+#pragma mark - 3D 演示（SceneKit）
+
+#import <SceneKit/SceneKit.h>
+
+@interface MTDemo3DVC : UIViewController
+@end
+
+@implementation MTDemo3DVC
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.edgesForExtendedLayout = UIRectEdgeNone;
+    self.title = @"3D 演示";
+    self.view.backgroundColor = MTBg();
+
+    SCNView *sv = [[SCNView alloc] initWithFrame:self.view.bounds];
+    sv.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    sv.backgroundColor = MTBg();
+    sv.allowsCameraControl = YES;
+    sv.autoenablesDefaultLighting = NO;
+    [self.view addSubview:sv];
+
+    SCNScene *scene = [SCNScene scene];
+    sv.scene = scene;
+
+    // 摄像机
+    SCNNode *cam = [SCNNode node];
+    cam.camera = [SCNCamera camera];
+    cam.camera.fieldOfView = 55;
+    cam.position = SCNVector3Make(0, 0.6, 4.2);
+    [scene.rootNode addChildNode:cam];
+    sv.pointOfView = cam;
+
+    // 环境光 + 两个方向光
+    SCNNode *amb = [SCNNode node];
+    amb.light = [SCNLight light]; amb.light.type = SCNLightTypeAmbient;
+    amb.light.color = [UIColor colorWithWhite:0.35 alpha:1];
+    [scene.rootNode addChildNode:amb];
+
+    for (NSInteger i = 0; i < 2; i++) {
+        SCNNode *l = [SCNNode node];
+        l.light = [SCNLight light]; l.light.type = SCNLightTypeOmni;
+        l.light.color = i == 0 ? [UIColor colorWithRed:0.35 green:0.55 blue:1 alpha:1] : [UIColor colorWithRed:1 green:0.45 blue:0.75 alpha:1];
+        l.position = i == 0 ? SCNVector3Make(-2.5, 1.5, 2.5) : SCNVector3Make(2.5, -0.8, 2.0);
+        [scene.rootNode addChildNode:l];
+    }
+
+    // 主体：环面结 + 金属材质
+    SCNTorus *torus = [SCNTorus torusWithRingRadius:0.62 pipeRadius:0.22];
+    SCNNode *torusNode = [SCNNode nodeWithGeometry:torus];
+    torus.firstMaterial.diffuse.contents = [UIColor colorWithRed:0.24 green:0.51 blue:0.96 alpha:1];
+    torus.firstMaterial.metalness.contents = @0.85;
+    torus.firstMaterial.roughness.contents = @0.28;
+    [scene.rootNode addChildNode:torusNode];
+
+    // 环绕的小方块
+    for (NSInteger i = 0; i < 6; i++) {
+        SCNBox *box = [SCNBox boxWithWidth:0.16 height:0.16 length:0.16 chamferRadius:0.04];
+        SCNNode *n = [SCNNode nodeWithGeometry:box];
+        box.firstMaterial.diffuse.contents = [UIColor colorWithWhite:0.95 alpha:1];
+        CGFloat a = i / 6.0 * M_PI * 2;
+        n.position = SCNVector3Make(cos(a) * 1.35, sin(a) * 0.55, sin(a) * 1.35);
+        n.name = @"sat";
+        [scene.rootNode addChildNode:n];
+    }
+
+    // 地面（半透明）让阴影有落点
+    SCNFloor *floor = [SCNFloor floor];
+    floor.reflectivity = 0.05;
+    floor.firstMaterial.diffuse.contents = [UIColor colorWithWhite:0.12 alpha:1];
+    SCNNode *fn = [SCNNode nodeWithGeometry:floor];
+    fn.position = SCNVector3Make(0, -1.0, 0);
+    [scene.rootNode addChildNode:fn];
+
+    [torusNode runAction:[SCNAction repeatActionForever:[SCNAction rotateByX:0 y:2*M_PI z:0 duration:8]]];
+
+    UILabel *hint = MTLabel(CGRectMake(16, self.view.bounds.size.height - 54, self.view.bounds.size.width - 32, 20),
+                            @"拖动旋转 / 双指缩放（SceneKit allowsCameraControl）", 12, MTTextDim(), UIFontWeightRegular);
+    hint.autoresizingMask = UIViewAutoresizingFlexibleTopMargin | UIViewAutoresizingFlexibleWidth;
+    [self.view addSubview:hint];
+}
+@end
+
+#pragma mark - 多线程下载（分段 Range 并发 + 合并）
+
+@interface MTDemoDownloadVC : UIViewController
+@property (nonatomic, strong) UILabel *status;
+@property (nonatomic, strong) UIProgressView *bar;
+@property (nonatomic, strong) UITextView *log;
+@property (nonatomic, assign) NSInteger total;
+@property (nonatomic, strong) NSMutableArray<NSNumber *> *done;
+@property (nonatomic, strong) NSMutableArray<NSString *> *parts;
+@property (nonatomic, assign) BOOL running;
+@end
+
+@implementation MTDemoDownloadVC
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.edgesForExtendedLayout = UIRectEdgeNone;
+    self.title = @"多线程下载";
+    self.view.backgroundColor = MTBg();
+    CGFloat w = self.view.bounds.size.width;
+
+    self.status = MTLabel(CGRectMake(16, 72, w - 32, 20), @"待开始", 13, MTTextDim(), UIFontWeightRegular);
+    [self.view addSubview:self.status];
+
+    self.bar = [[UIProgressView alloc] initWithFrame:CGRectMake(16, 100, w - 32, 4)];
+    self.bar.progressTintColor = MTAccent();
+    [self.view addSubview:self.bar];
+
+    self.log = [[UITextView alloc] initWithFrame:CGRectMake(16, 118, w - 32, self.view.bounds.size.height - 260)];
+    self.log.editable = NO; self.log.backgroundColor = MTPanel(); self.log.textColor = MTText();
+    self.log.font = [UIFont fontWithName:@"Menlo" size:11] ?: [UIFont systemFontOfSize:11];
+    self.log.text = @"把一个大文件切成 N 段，Range 并发下载，全部落地后再合并。\n每条 NSURLSession 任务独立，进度按字节累加。\n";
+    [self.view addSubview:self.log];
+
+    UIButton *go = [UIButton buttonWithType:UIButtonTypeSystem];
+    go.frame = CGRectMake(16, self.view.bounds.size.height - 126, w - 32, 44);
+    go.backgroundColor = MTCell(); go.layer.cornerRadius = 10;
+    [go setTitle:@"开始 4 线程下载" forState:UIControlStateNormal];
+    [go setTitleColor:MTText() forState:UIControlStateNormal];
+    [go addTarget:self action:@selector(start) forControlEvents:UIControlEventTouchUpInside];
+    [self.view addSubview:go];
+}
+
+- (void)append:(NSString *)s {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        self.log.text = [self.log.text stringByAppendingFormat:@"\n%@", s ?: @""];
+        [self.log scrollRangeToVisible:NSMakeRange(self.log.text.length, 1)];
+    });
+}
+
+- (void)start {
+    if (self.running) return;
+    self.running = YES;
+    loadCaps();
+    NSString *eid = @"com.lgyz.mt.ext.demo";
+    if (!gConsentAsk) { [self append:@"宿主没有权限 API"]; self.running = NO; return; }
+    gConsentAsk(eid, @"network", @"多线程下载需要联网：分段请求同一个文件再合并。", ^(BOOL granted) {
+        if (!granted) { [self append:@"用户拒绝联网"]; self.running = NO; return; }
+        [self runDownload];
+    });
+}
+
+- (void)runDownload {
+    NSString *urlStr = @"https://raw.githubusercontent.com/lgyz6767/Mtfile-iOS-extras-SDK/main/readme.md";
+    NSURL *url = [NSURL URLWithString:urlStr];
+    NSMutableURLRequest *head = [NSMutableURLRequest requestWithURL:url];
+    head.timeoutInterval = 15;
+    [[[NSURLSession sharedSession] dataTaskWithRequest:head completionHandler:^(NSData *d, NSURLResponse *r, NSError *e) {
+        NSInteger len = [(NSHTTPURLResponse *)r statusCode] == 200 ? r.expectedContentLength : -1;
+        if (len <= 0) { [self append:[NSString stringWithFormat:@"拿不到长度：%@", e.localizedDescription ?: @"status != 200"]]; self.running = NO; return; }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            self.total = len;
+            self.done = [@[@0,@0,@0,@0] mutableCopy];
+            self.parts = [NSMutableArray array];
+            [self append:[NSString stringWithFormat:@"文件 %ld 字节，切成 4 段", (long)len]];
+            [self fetchChunk:0 of:4 url:url];
+            [self fetchChunk:1 of:4 url:url];
+            [self fetchChunk:2 of:4 url:url];
+            [self fetchChunk:3 of:4 url:url];
+        });
+    }] resume];
+}
+
+- (void)fetchChunk:(NSInteger)i of:(NSInteger)n url:(NSURL *)url {
+    NSInteger len = self.total;
+    NSInteger start = len * i / n;
+    NSInteger end = (i == n - 1) ? len - 1 : (len * (i + 1) / n - 1);
+    NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
+    req.timeoutInterval = 20;
+    [req setValue:[NSString stringWithFormat:@"bytes=%ld-%ld", (long)start, (long)end] forHTTPHeaderField:@"Range"];
+    NSURLSessionDataTask *t = [[NSURLSession sharedSession] dataTaskWithRequest:req
+        completionHandler:^(NSData *data, NSURLResponse *resp, NSError *err) {
+            NSInteger code = [(NSHTTPURLResponse *)resp statusCode];
+            if (err || code != 206) {
+                [self append:[NSString stringWithFormat:@"段 %ld 失败：HTTP %ld %@", (long)i, (long)code, err.localizedDescription ?: @""]];
+                dispatch_async(dispatch_get_main_queue(), ^{ self.running = NO; });
+                return;
+            }
+            NSString *p = [NSTemporaryDirectory() stringByAppendingPathComponent:[NSString stringWithFormat:@"dl_%ld.part", (long)i]];
+            [data writeToFile:p atomically:YES];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                self.parts[i] = p;
+                self.done[i] = @(data.length);
+                [self updateProgress];
+                [self append:[NSString stringWithFormat:@"段 %ld 完成：%lu 字节", (long)i, (unsigned long)data.length]];
+                if (self.parts.count == 4 && self.parts[0] && self.parts[1] && self.parts[2] && self.parts[3]) [self merge];
+            });
+        }];
+    [t resume];
+}
+
+- (void)updateProgress {
+    double got = 0; for (NSNumber *n in self.done) got += n.doubleValue;
+    float p = self.total > 0 ? (float)(got / self.total) : 0;
+    self.bar.progress = p;
+    self.status.text = [NSString stringWithFormat:@"%.0f%%  %ld / %ld 字节", p * 100, (long)got, (long)self.total];
+}
+
+- (void)merge {
+    NSString *out = [NSTemporaryDirectory() stringByAppendingPathComponent:@"merged.md"];
+    [[NSFileManager defaultManager] removeItemAtPath:out error:NULL];
+    NSMutableData *all = [NSMutableData data];
+    for (NSInteger i = 0; i < 4; i++) {
+        NSData *d = [NSData dataWithContentsOfFile:self.parts[i]];
+        if (d) [all appendData:d];
+    }
+    [all writeToFile:out atomically:YES];
+    [self append:[NSString stringWithFormat:@"合并完成：%@（%lu 字节）", out, (unsigned long)all.length]];
+    self.status.text = @"完成";
+    self.running = NO;
+}
+@end
+
+#pragma mark - 终端（MTExtShellRun + 命令输入）
+
+@interface MTDemoTermVC : UIViewController <UITextFieldDelegate>
+@property (nonatomic, strong) UITextView *out;
+@property (nonatomic, strong) UITextField *input;
+@property (nonatomic, strong) NSMutableArray<NSString *> *history;
+@end
+
+@implementation MTDemoTermVC
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.edgesForExtendedLayout = UIRectEdgeNone;
+    self.title = @"终端";
+    self.view.backgroundColor = MTBg();
+    self.history = [NSMutableArray array];
+    CGFloat w = self.view.bounds.size.width, h = self.view.bounds.size.height;
+
+    self.out = [[UITextView alloc] initWithFrame:CGRectMake(0, 0, w, h - 96)];
+    self.out.editable = NO; self.out.backgroundColor = MTBg(); self.out.textColor = MTText();
+    self.out.font = [UIFont fontWithName:@"Menlo" size:12] ?: [UIFont systemFontOfSize:12];
+    self.out.text = @"# 命令在宿主进程外由 bash -lc 执行，需要终端权限\n";
+    [self.view addSubview:self.out];
+
+    UIView *bar = [[UIView alloc] initWithFrame:CGRectMake(0, h - 96, w, 96)];
+    bar.backgroundColor = MTPanel();
+    [self.view addSubview:bar];
+
+    self.input = [[UITextField alloc] initWithFrame:CGRectMake(12, 10, w - 100, 34)];
+    self.input.backgroundColor = MTCell(); self.input.textColor = MTText();
+    self.input.placeholder = @"输入命令，例如 ls /var/mobile";
+    self.input.font = [UIFont fontWithName:@"Menlo" size:12] ?: [UIFont systemFontOfSize:12];
+    self.input.returnKeyType = UIReturnKeyGo;
+    self.input.delegate = self;
+    self.input.leftView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 8, 34)];
+    self.input.leftViewMode = UITextFieldViewModeAlways;
+    self.input.layer.cornerRadius = 8;
+    [bar addSubview:self.input];
+
+    UIButton *run = [UIButton buttonWithType:UIButtonTypeSystem];
+    run.frame = CGRectMake(w - 80, 10, 68, 34);
+    run.backgroundColor = MTAccent(); run.layer.cornerRadius = 8;
+    [run setTitle:@"运行" forState:UIControlStateNormal];
+    [run setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+    [run addTarget:self action:@selector(runCommand) forControlEvents:UIControlEventTouchUpInside];
+    [bar addSubview:run];
+
+    NSArray *quick = @[@"uname -a", @"ls /var/mobile", @"df -h", @"id"];
+    CGFloat x = 12;
+    for (NSString *q in quick) {
+        UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
+        b.frame = CGRectMake(x, 54, 0, 30);
+        [b setTitle:q forState:UIControlStateNormal];
+        [b setTitleColor:MTTextDim() forState:UIControlStateNormal];
+        b.titleLabel.font = [UIFont fontWithName:@"Menlo" size:10] ?: [UIFont systemFontOfSize:10];
+        b.backgroundColor = MTCell(); b.layer.cornerRadius = 6;
+        CGSize sz = [q sizeWithAttributes:@{NSFontAttributeName:b.titleLabel.font}];
+        b.frame = CGRectMake(x, 54, sz.width + 16, 30);
+        b.tag = quick.count; // 简单用 title 传
+        [b addTarget:self action:@selector(quickTap:) forControlEvents:UIControlEventTouchUpInside];
+        [bar addSubview:b];
+        x += sz.width + 24;
+    }
+
+    // 键盘避让：底部输入条跟着键盘走，别让内容被顶栏/键盘夹在中间
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(kb:) name:UIKeyboardWillChangeFrameNotification object:nil];
+}
+
+- (void)kb:(NSNotification *)n {
+    CGRect r = [n.userInfo[UIKeyboardFrameEndUserInfoKey] CGRectValue];
+    CGFloat kbH = MAX(0, self.view.bounds.size.height - r.origin.y);
+    self.input.superview.frame = CGRectMake(0, self.view.bounds.size.height - 96 - kbH, self.view.bounds.size.width, 96);
+    self.out.frame = CGRectMake(0, 0, self.view.bounds.size.width, self.view.bounds.size.height - 96 - kbH);
+    [self.view bringSubviewToFront:self.input.superview];
+}
+
+- (void)quickTap:(UIButton *)b { self.input.text = [b titleForState:UIControlStateNormal]; [self runCommand]; }
+
+- (BOOL)textFieldShouldReturn:(UITextField *)tf { [self runCommand]; return YES; }
+
+- (void)runCommand {
+    NSString *cmd = [self.input.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (!cmd.length) return;
+    self.input.text = @"";
+    [self append:[NSString stringWithFormat:@"$ %@", cmd]];
+    loadCaps();
+    if (!gShellRun) { [self append:@"宿主没有 MTExtShellRun（需要 1.2.0-14+）"]; return; }
+    gShellRun(@"com.lgyz.mt.ext.demo", cmd, @"/var/mobile", ^(NSString *chunk, BOOL isErr) {
+        [self append:chunk];
+    }, ^(int st) {
+        [self append:[NSString stringWithFormat:@"[退出码 %d]", st]];
+    });
+}
+
+- (void)append:(NSString *)s {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        self.out.text = [self.out.text stringByAppendingString:s ?: @""];
+        [self.out scrollRangeToVisible:NSMakeRange(self.out.text.length, 1)];
+    });
+}
+@end
+
 @interface MTDemoExt : NSObject <MTExtV2Extension>
 @end
 
@@ -763,6 +1086,9 @@ static void loadCaps(void) {
     }
     if ([itemID isEqualToString:@"zip"])   return [MTDemoZipVC new];
     if ([itemID isEqualToString:@"caps"])  return [MTDemoCapsVC new];
+    if ([itemID isEqualToString:@"threed"]) return [MTDemo3DVC new];
+    if ([itemID isEqualToString:@"download"]) return [MTDemoDownloadVC new];
+    if ([itemID isEqualToString:@"term"])  return [MTDemoTermVC new];
     if ([itemID isEqualToString:@"lab"])   return [MTDemoLabVC new];
     return [MTDemoHomeVC new];
 }

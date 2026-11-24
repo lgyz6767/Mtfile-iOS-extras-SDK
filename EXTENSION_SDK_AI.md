@@ -114,6 +114,11 @@ id<MTExtV2Extension> MTCreateExtension(void) { return [MyExt new]; }
 ## 4. UI 规范
 
 - 每个自定义 VC 都要：`vc.edgesForExtendedLayout = UIRectEdgeNone;`（否则内容被宿主导航栏压住）。
+- 顶栏裁剪（下拉重叠）硬规则：
+  1. `contentInsetAdjustmentBehavior = .never` 时必须自己补 `safeAreaInsets.top` + 导航栏高度（竖屏 44 / 横屏 32）。
+  2. 一个 scrollView 只允许一套下拉手势/刷新控件，禁止再自绘下拉层。
+  3. 自绘装饰容器 `clipsToBounds = YES`，别画进导航栏区域。
+  4. 键盘弹出必须监听 frame 或 `keyboardLayoutGuide`，工具栏/输入条 `bringSubviewToFront:`。
 - 颜色一律走 `MTColor()` 并给 fallback，不要硬编码纯黑纯白当主题色。
 - 深色底 + 中性灰文字：`bg #171717`、`cell #262626`、`text #FFFFFF`、`textDim #9E9E9E`、`accent #3D82F6`（fallback 用这些）。
 - 不要用 Storyboard / XIB；不要用 `UIAlertController` 之外的第三方弹窗。
@@ -147,6 +152,8 @@ zip -q -r MyExt.mtextra manifest.json MyExt.dylib icon.png   # 没有 icon.png �
 - [ ] 无 Swift、无第三方依赖、无 Xcode 工程
 - [ ] 所有宿主类调用都有 `respondsToSelector` 保护
 - [ ] 每个 VC 都设了 `edgesForExtendedLayout`
+- [ ] 列表页只有一套下拉手势，header 没有越界，装饰层已裁剪
+- [ ] 键盘弹出时输入条/工具栏已重排，不压内容
 - [ ] 没有声明 `editorExtensions`（除非确实实现了编辑器）
 - [ ] 联网/终端都走宿主 API，且处理了「拒绝」与「沙盒版不可用」
 
