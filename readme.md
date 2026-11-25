@@ -81,7 +81,9 @@ Bundle.mtextra
 | `id` | 是 | 唯一标识，同时是安装目录名；建议反向域名。**市场里必须与目录名一致** |
 | `name` | 否 | 管理页/侧栏显示名，缺省用 id |
 | `version` | 否 | 字符串，市场用它判断可更新 |
-| `dylib` | 是 | dylib 相对路径，必须在包内存在 |
+| `dylib` | dylib 扩展必填 | dylib 相对路径，必须在包内存在 |
+| `runtime` | 否 | 写 `"lua"` 即成为 **Lua 加载型扩展**：不需要 dylib，宿主用内置 Lua 5.4 解释器跑 `entry`，沙盒版/未越狱 IPA 也能用 |
+| `entry` | 否 | Lua 扩展的入口脚本，默认 `main.lua` |
 | `iconImage` | 否 | **自定义图标**，相对扩展目录的 PNG（建议 96×96 或 128×128，透明底）。缺省/读不到时回退 `icon` 的 SF Symbol |
 | `icon` | 否 | SF Symbol 名，侧栏兜底图标 |
 | `capabilities` | 否 | 声明 `network` / `terminal`，**仅用于展示**；真正能不能用取决于用户是否在弹窗里点「允许」 |
@@ -231,3 +233,103 @@ manifest 写了 `editors`/`editorExtensions` 才参与接管。多个扩展抢�
 - [ ] 侧栏每个 `items[].id` 都有分支
 - [ ] 用了联网/终端 → 走 `MTExtNetRequest` / `MTExtShellRun`，并处理「拒绝」与沙盒两种情况
 - [ ] 上市场：按 `MARKET.md` 放 `repo/ext/<id>/`，版本号记得改
+
+---
+
+## 12. Lua 加载型扩展（v2.1.1 新增，沙盒版可用）
+
+dylib 扩展必须 dlopen，在沙盒 IPA 里跑不了；Lua 扩展不编译、不加载二进制，宿主用**内置的 Lua 5.4** 解释器执行脚本，唯一能碰到系统的只有白名单 API。
+
+```json
+{
+  "framework": "v2.1",
+  "id": "com.example.luademo",
+  "name": "Lua 示例",
+  "version": "1.0.0",
+  "runtime": "lua",
+  "entry": "main.lua",
+  "sidebar": { "items": [{ "id": "home", "title": "Lua 示例", "icon": "doc.text" }] }
+}
+```
+
+`main.lua` 必须 `return` 一个模块表：
+
+```lua
+local function ui(ctx)
+  return {
+    { type = "header", title = "Hello" },
+    { type = "label", text = "扩展目录：" .. (ctx.extensionDir or "-") },
+    { type = "button", title = "点我", onTap = function() mt.alert("hi") end }
+  }
+end
+return { build = ui }
+```
+
+`build(ctx)` 的 `ctx`：`path`（编辑器接管时的文件路径，或侧栏打开时的默认目录）、`extensionDir`、`item`（被点击的侧栏 id）。
+
+**声明式元素**（全部原生控件，无 WebView）：
+
+| type | 字段 |
+|---|---|
+| `header` | `title` |
+| `label` / `dim` | `text`（`dim` 是次要说明文字） |
+| `button` | `title`、`onTap()` |
+| `textfield` | `id`（必填，用来取值）、`placeholder`、`value` |
+| `spacer` | `height`（默认 8） |
+| `divider` | — |
+
+`mt.values(id)` 取输入框当前值；`mt.refresh()` 让宿主重新调 `build` 重建界面。
+
+**白名单 API**：
+
+| API | 说明 |
+|---|---|
+| `mt.print(...)` | 写系统日志 |
+| `mt.alert(text)` | 弹窗 |
+| `mt.read(path)` | 读文本（非 UTF-8 / 二进制返回 nil） |
+| `mt.write(path, text)` | 写文本；**未信任扩展会先弹窗询问** |
+| `mt.exists(path)` | bool |
+| `mt.list(path)` | 文件名数组，失败 nil |
+| `mt.delete(path)` | 删文件；**未信任先询问** |
+| `mt.shell(cmd)` | 调宿主终端，返回 `{code=, output=}`；沙盒版或无权限返回 nil |
+| `mt.http(url, cb)` | GET；**首次使用必须用户点「允许联网」**，回调 `cb(code, body, err)` 在主线程 |
+| `mt.values(id)` / `mt.refresh()` | 见上 |
+
+脚本被摘掉了 `io`、`package`、`dofile`、`loadfile`，以及 `os.execute/exit/remove/rename/setlocale`。语法错误、运行错误、回调异常都只弹窗并记录，不会让宿主崩。
+完整可运行样例在 `demo-lua/`（`build.sh` 打成 `LuaDemo.mtextra`）。
+
+---
+
+## 13. 崩溃保护、安全模式与扩展隔离（v2.1.1 新增）
+
+宿主为每个扩展保存一份守卫文件（`Documents/MTFile/ext_safety.plist`），记录：正在加载/正在展示页面的扩展、禁用名单、崩溃计数、类名归属、信任状态。
+
+1. **加载前**写 `pendingExt`，dlopen 成功且 `MTCreateExtension` 返回实例才清掉；打开扩展页面时写 `activeExt`。正常退到后台或退出会主动清空。
+2. 如果进程在这两步之间死掉（扩展里野指针、死循环、`abort()`、UIKit 在主线程崩），下次启动 `BeginLaunch` 会判定“上次死在扩展里”：**禁用该扩展**、`crashCount+1`、写一条报告，启动 0.8 秒后弹窗告知，可一键进「扩展管理」。
+3. **连续第二次**仍因扩展崩 → `safeMode = YES`，**全部扩展暂停加载**。扩展管理顶部横幅 + 「解除安全模式」按钮（`MTExtSafetyExitSafeMode()`），确认不是扩展引起再点。
+4. 24 小时内没再崩，计数自动衰减，不会永久背着污点。
+5. 手动恢复：扩展列表里被禁用的项点一下即可（`MTExtSafetySetDisabled(eid, NO)`），恢复时会重新诊断一次。
+
+**同名函数/变量互串的解决办法**（重点，按顺序全做）：
+
+- 宿主用 `dlopen(..., RTLD_LAZY | RTLD_LOCAL)`：C 符号不进全局符号表，两个扩展导出同名 C 函数不会互相覆盖。
+- 扩展的**全局变量一律加前缀**（如 `static` 或 `mtx_`），别用 `int counter;` 这种裸全局。
+- Objective-C 类名全局唯一，宿主在加载成功后用 `objc_copyClassNamesForImage` 登记类名（`MTExtSafetyClaimClasses`）。**类名已被别的扩展占用就拒绝加载并提示占用者**，不给“谁后加载谁赢”的随机行为。约定前缀：`MTX<厂商><扩展><类>`，例如 `MTXLgyzLuaDemoPanel`。
+- 不要 swizzle 宿主或系统类的方法；不要 `NSClassFromString` 后改别人的实例。需要共享状态就各写各的文件。
+- Lua 扩展天然隔离：每个页面一个独立 `lua_State`，脚本之间没有共享全局；跨页面持久化请自己写文件。
+
+---
+
+## 14. 信任开关与文件权限（v2.1.1 新增）
+
+- 安装成功后宿主会立刻弹窗问「是否信任这个扩展」，也可以在 **扩展详情 → 信任与文件权限** 里随时改。
+- **已信任**：`MTExtCreateFile` / `MTExtDeleteFile` 直接执行，不再打断。
+- **未信任**：每次新建/删除都会弹窗确认（显示扩展名、目标路径、动作），用户拒绝就返回错误。
+- 读取、联网、终端权限与信任是两套东西：信任只管写/删文件；联网、终端仍按第 7 节各自征求同意。
+- 不要试图绕过：宿主对所有写/删入口统一走 `MTExtCreateFile`/`MTExtDeleteFile`；直接用 `NSFileManager` 写自己的沙盒目录可以，但写用户文件不会被宿主记录为“受信任操作”。
+
+---
+
+## 15. 上架市场
+
+流程、目录结构、CI 校验、版本更新规则见仓库根目录 `MARKET.md`。要点：放到 `repo/ext/<manifest id>/`，`manifest.json` 与 `.mtextra` 同目录，`id` 必须与目录名一致，push 后 CI 重建 `index.json`。

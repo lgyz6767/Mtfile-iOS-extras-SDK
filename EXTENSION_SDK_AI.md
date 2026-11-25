@@ -1,4 +1,4 @@
-# MTFile Extension SDK — AI 施工规格（v2.1.0）
+# MTFile Extension SDK — AI 施工规格（v2.1.1）
 
 本文件是给 AI 的执行契约。读完直接产出文件，不要改写格式，不要省略任何必填字段。
 
@@ -203,3 +203,43 @@ BOOL  MTExtProcessAvailable(void);      // 沙盒版为 NO，终端不可用
 - 单个扩展：`manifest.json` + dylib + icon 直接放包根，输出 `.mtextra`。
 - 一个包多个扩展（v2.1 支持，仅本地安装）：根目录不要放 manifest，放 `extA/`、`extB/` 各自一套；宿主扫子目录逐个装。**上市场必须拆成单扩展包。**
 - 上架步骤、目录命名、CI 校验规则见 `MARKET.md`。
+
+---
+
+## 10. 崩溃保护 / 隔离 / 信任 / Lua（v2.1.1，写代码时必须遵守）
+
+### 10.1 让扩展“可被隔离”
+
+- 所有 ObjC 类名加唯一前缀：`MTX<厂商><扩展><用途>`，例如 `MTXLgyzDemoPanel`。宿主会登记类名，重复即**拒绝加载**（提示占用者），不要指望后加载覆盖。
+- C 全局变量用 `static` 或加前缀；不要导出裸的 `init`、`main`、`run` 之类通用符号。
+- 不在 `+load` / `__attribute__((constructor))` 里做重活，更不能在那里弹 UI、起线程、读大量文件——崩在这里同样会算到扩展头上。
+- 视图控制器 `dealloc` 里把 NSTimer、通知、KVO、block 回调全部注销；悬空回调是“打开页面就闪退”的头号原因。
+
+### 10.2 崩溃保护（宿主自动做，扩展只需配合）
+
+宿主在 dlopen 前、页面展示时分别落盘 `pendingExt` / `activeExt`：进程死在这段区间，下次启动自动禁用该扩展；连续两次进安全模式禁用全部。扩展不需要额外代码，但要知道：
+- **不要在扩展里调用 `abort()`、`exit()`、`NSAssert` 这类会主动杀进程的东西**，否则会被记为崩溃元凶。
+- 长任务放后台队列，主线程只做 UI；同步网络/同步 shell 在主线程会触发 watchdog 杀掉，同样记在扩展头上。
+
+### 10.3 信任开关与文件写删
+
+- 写/删用户文件只能走宿主 API：`MTExtCreateFile(path, content, &err)`、`MTExtDeleteFile(path, &err)`。
+- 未信任时宿主会弹窗询问；**不要**为了“体验流畅”用 `NSFileManager` 直接写，越权写入不会弹窗，但会被用户当成越狱插件乱搞，也可能在沙盒里直接失败。
+- 安装成功时宿主会问一次「是否信任」，扩展不用自己做引导页。
+- 扩展详情页「信任与文件权限」是唯一开关，扩展不要缓存信任状态，每次调 API 让宿主判断。
+
+### 10.4 Lua 加载型扩展（优先推荐给沙盒用户）
+
+- manifest 写 `"runtime": "lua"`、`"entry": "main.lua"`，不要 `dylib`。
+- `main.lua` 末尾 `return { build = function(ctx) ... end }`；`build` 返回元素数组。
+- 只用 `mt.*`；`io`、`dofile`、`os.execute` 已被摘掉，不要写。
+- 每个页面独立 `lua_State`；要跨页面保存状态就自己写文件（写文件受信任开关约束）。
+- 元素类型仅 `header/label/dim/button/textfield/spacer/divider`；按钮回调里的错误宿主会 `pcall` 兜住，但仍要自己校验参数与路径。
+- 完整样例：`demo-lua/main.lua`，`demo-lua/build.sh` 打包成 `.mtextra`。
+
+### 10.5 自检（新增项）
+
+- [ ] 类名/全局符号有唯一前缀，没和 demo、lua、term、codeserver 撞
+- [ ] 没有主动杀进程的调用，长任务不在主线程
+- [ ] 写/删文件走 `MTExtCreateFile` / `MTExtDeleteFile`
+- [ ] 沙盒版可用场景优先考虑 Lua 扩展
