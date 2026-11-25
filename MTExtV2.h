@@ -42,6 +42,11 @@ FOUNDATION_EXPORT void MTExtRequestConsent(NSString *extID, NSString *capability
 /// 跑一条 shell 命令（需要 terminal 权限）。返回 pid，失败 -1（未授权时输出里会写原因）
 FOUNDATION_EXPORT pid_t MTExtShellRun(NSString *extID, NSString *command, NSString *cwd,
                                        MTExtProcessOutputBlock onOutput, MTExtProcessExitBlock onExit);
+/// 信任（安装成功后询问一次；信任 = 允许直接新建/删除文件，不再逐次确认）
+FOUNDATION_EXPORT void MTExtAskTrust(NSString *extID, NSString *name, void (^done)(BOOL trusted));
+/// 文件写入/删除：未信任时每次弹窗问用户（同步，内部会转 runloop 等用户点）
+FOUNDATION_EXPORT BOOL MTExtCreateFile(NSString *extID, NSString *path, NSData *data, NSError **err);
+FOUNDATION_EXPORT BOOL MTExtDeleteFile(NSString *extID, NSString *path, NSError **err);
 /// 联网请求（需要 network 权限），首次调用会弹窗；回调在主线程
 FOUNDATION_EXPORT void MTExtNetRequest(NSString *extID, NSString *urlString, NSDictionary<NSString *, NSString *> *headers,
                                        void (^done)(NSData *data, NSInteger status, NSError *error));
