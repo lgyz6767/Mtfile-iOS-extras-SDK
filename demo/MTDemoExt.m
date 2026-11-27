@@ -586,7 +586,7 @@ static NSArray<NSDictionary *> *MTZipEntries(NSData *d) {
         @[@"hourglass", @"宿主 HUD",    @"调 MTProgressHUD 显示进度框，扩展无需自带 UI", @"hud"],
         @[@"wand.and.stars", @"撑满一屏的动效", @"纯 CoreAnimation：光斑、脉冲、逐条滑入", @"anim"],
         @[@"doc.text", @"接管编辑器",   @"manifest 声明 md/txt，打开即用扩展自己的编辑器", @"editor"],
-        @[@"cube.transparent", @"3D 演示", @"SceneKit：金属环面结 + 环绕方块，可拖动旋转", @"threed"],
+        @[@"cube.transparent", @"3D 演示", @"CoreAnimation 3D：透视立方体 + 环绕方块，可拖动旋转/双指缩放", @"threed"],
         @[@"arrow.down.circle", @"多线程下载", @"4 条 Range 请求并发，落地后合并，进度按字节累加", @"dl"],
         @[@"terminal", @"终端", @"MTExtShellRun 走 bash -lc，输入框 + 快捷命令 + 退出码", @"term"],
         @[@"square.grid.3x3.fill", @"2048 小游戏", @"棋盘、滑动合并、计分、最高分持久化（原独立 2048 扩展已并入）", @"g2048"],
@@ -759,86 +759,176 @@ static void loadCaps(void) {
 @end
 
 
-#pragma mark - 3D 演示（SceneKit）
+#pragma mark - 3D 演示（CoreAnimation，iPhone 7 上不依赖 Metal / SceneKit）
 
-#import <SceneKit/SceneKit.h>
+// 说明：早先用 SceneKit，在部分越狱环境里 SCNView 起不来（黑屏只剩提示文字），
+// 这里改成纯 CoreAnimation 的 3D 变换：透视 + 六面立方体 + 环绕小方块，任何设备都能跑。
 
-@interface MTDemo3DVC : UIViewController
+@interface MTDemo3DVC : UIViewController <UIGestureRecognizerDelegate>
+@property (nonatomic, strong) UIView *stage;
+@property (nonatomic, strong) CALayer *spin;        // 整体自转
+@property (nonatomic, strong) CALayer *cube;        // 六面体
+@property (nonatomic, strong) NSMutableArray<CALayer *> *sats;
+@property (nonatomic, assign) CGFloat dragX, dragY, zoom;
 @end
 
+static CATransform3D MT3DPerspective(CGFloat d) {
+    CATransform3D t = CATransform3DIdentity;
+    t.m34 = -1.0 / d;
+    return t;
+}
+
 @implementation MTDemo3DVC
+
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.edgesForExtendedLayout = UIRectEdgeNone;
-    self.title = @"3D 演示";
     self.view.backgroundColor = MTBg();
+    self.title = @"3D 演示";
+    self.zoom = 1.0;
+    self.sats = [NSMutableArray array];
 
-    SCNView *sv = [[SCNView alloc] initWithFrame:self.view.bounds];
-    sv.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    sv.backgroundColor = MTBg();
-    sv.allowsCameraControl = YES;
-    sv.autoenablesDefaultLighting = NO;
-    [self.view addSubview:sv];
+    _stage = [[UIView alloc] initWithFrame:CGRectZero];
+    _stage.backgroundColor = [UIColor clearColor];
+    _stage.layer.sublayerTransform = MT3DPerspective(900);
+    _stage.userInteractionEnabled = YES;
+    [self.view addSubview:_stage];
 
-    SCNScene *scene = [SCNScene scene];
-    sv.scene = scene;
+    _spin = [CALayer layer];
+    _spin.frame = CGRectMake(0, 0, 1, 1);
+    [_stage.layer addSublayer:_spin];
 
-    // 摄像机
-    SCNNode *cam = [SCNNode node];
-    cam.camera = [SCNCamera camera];
-    cam.camera.fieldOfView = 55;
-    cam.position = SCNVector3Make(0, 0.6, 4.2);
-    [scene.rootNode addChildNode:cam];
-    sv.pointOfView = cam;
-
-    // 环境光 + 两个方向光
-    SCNNode *amb = [SCNNode node];
-    amb.light = [SCNLight light]; amb.light.type = SCNLightTypeAmbient;
-    amb.light.color = [UIColor colorWithWhite:0.35 alpha:1];
-    [scene.rootNode addChildNode:amb];
-
-    for (NSInteger i = 0; i < 2; i++) {
-        SCNNode *l = [SCNNode node];
-        l.light = [SCNLight light]; l.light.type = SCNLightTypeOmni;
-        l.light.color = i == 0 ? [UIColor colorWithRed:0.35 green:0.55 blue:1 alpha:1] : [UIColor colorWithRed:1 green:0.45 blue:0.75 alpha:1];
-        l.position = i == 0 ? SCNVector3Make(-2.5, 1.5, 2.5) : SCNVector3Make(2.5, -0.8, 2.0);
-        [scene.rootNode addChildNode:l];
+    // 六面立方体
+    _cube = [CALayer layer];
+    _cube.bounds = CGRectMake(0, 0, 140, 140);
+    _cube.anchorPoint = CGPointMake(0.5, 0.5);
+    [_spin addSublayer:_cube];
+    UIColor *faces[6] = {
+        [UIColor colorWithRed:0.24 green:0.51 blue:0.96 alpha:0.95],
+        [UIColor colorWithRed:0.20 green:0.42 blue:0.86 alpha:0.95],
+        [UIColor colorWithRed:0.30 green:0.58 blue:0.98 alpha:0.9],
+        [UIColor colorWithRed:0.17 green:0.36 blue:0.78 alpha:0.9],
+        [UIColor colorWithRed:0.27 green:0.54 blue:0.94 alpha:0.85],
+        [UIColor colorWithRed:0.22 green:0.46 blue:0.90 alpha:0.85]
+    };
+    CGFloat h = 70;
+    CATransform3D mats[6] = {
+        CATransform3DMakeTranslation(0, 0, h),
+        CATransform3DMakeRotation(M_PI, 0, 1, 0),
+        CATransform3DConcat(CATransform3DMakeTranslation(0, 0, -h), CATransform3DMakeRotation(M_PI, 0, 1, 0)),
+        CATransform3DMakeRotation(M_PI_2, 1, 0, 0),
+        CATransform3DConcat(CATransform3DMakeRotation(-M_PI_2, 1, 0, 0), CATransform3DMakeTranslation(0, 0, h)),
+        CATransform3DConcat(CATransform3DMakeRotation(-M_PI_2, 1, 0, 0), CATransform3DMakeTranslation(0, 0, -h))
+    };
+    for (NSInteger i = 0; i < 6; i++) {
+        CALayer *f = [CALayer layer];
+        f.bounds = CGRectMake(0, 0, 140, 140);
+        f.position = CGPointMake(0, 0);
+        f.backgroundColor = faces[i].CGColor;
+        f.borderColor = [UIColor colorWithWhite:1 alpha:0.35].CGColor;
+        f.borderWidth = 1;
+        f.cornerRadius = 10;
+        f.transform = mats[i];
+        [_cube addSublayer:f];
     }
-
-    // 主体：环面结 + 金属材质
-    SCNTorus *torus = [SCNTorus torusWithRingRadius:0.62 pipeRadius:0.22];
-    SCNNode *torusNode = [SCNNode nodeWithGeometry:torus];
-    torus.firstMaterial.diffuse.contents = [UIColor colorWithRed:0.24 green:0.51 blue:0.96 alpha:1];
-    torus.firstMaterial.metalness.contents = @0.85;
-    torus.firstMaterial.roughness.contents = @0.28;
-    [scene.rootNode addChildNode:torusNode];
+    // 立方体自身缓慢翻滚（与整圈公转叠加）
+    CABasicAnimation *rx = [CABasicAnimation animationWithKeyPath:@"transform.rotation.x"];
+    rx.fromValue = @0; rx.toValue = @(M_PI * 2);
+    rx.duration = 14; rx.repeatCount = HUGE_VALF;
+    [_cube addAnimation:rx forKey:@"spinX"];
+    CABasicAnimation *ry = [CABasicAnimation animationWithKeyPath:@"transform.rotation.y"];
+    ry.fromValue = @0; ry.toValue = @(M_PI * 2);
+    ry.duration = 9; ry.repeatCount = HUGE_VALF;
+    [_cube addAnimation:ry forKey:@"spinY"];
 
     // 环绕的小方块
-    for (NSInteger i = 0; i < 6; i++) {
-        SCNBox *box = [SCNBox boxWithWidth:0.16 height:0.16 length:0.16 chamferRadius:0.04];
-        SCNNode *n = [SCNNode nodeWithGeometry:box];
-        box.firstMaterial.diffuse.contents = [UIColor colorWithWhite:0.95 alpha:1];
-        CGFloat a = i / 6.0 * M_PI * 2;
-        n.position = SCNVector3Make(cos(a) * 1.35, sin(a) * 0.55, sin(a) * 1.35);
-        n.name = @"sat";
-        [scene.rootNode addChildNode:n];
+    for (NSInteger i = 0; i < 8; i++) {
+        CALayer *s = [CALayer layer];
+        s.bounds = CGRectMake(0, 0, 22, 22);
+        s.cornerRadius = 5;
+        s.backgroundColor = [UIColor colorWithWhite:0.96 alpha:1].CGColor;
+        s.borderColor = [MTAccent() colorWithAlphaComponent:0.6].CGColor;
+        s.borderWidth = 1;
+        [_spin addSublayer:s];
+        [_sats addObject:s];
     }
+    CABasicAnimation *orbit = [CABasicAnimation animationWithKeyPath:@"transform.rotation.y"];
+    orbit.fromValue = @0; orbit.toValue = @(M_PI * 2);
+    orbit.duration = 18; orbit.repeatCount = HUGE_VALF;
+    [_spin addAnimation:orbit forKey:@"orbit"];
 
-    // 地面（半透明）让阴影有落点
-    SCNFloor *floor = [SCNFloor floor];
-    floor.reflectivity = 0.05;
-    floor.firstMaterial.diffuse.contents = [UIColor colorWithWhite:0.12 alpha:1];
-    SCNNode *fn = [SCNNode nodeWithGeometry:floor];
-    fn.position = SCNVector3Make(0, -1.0, 0);
-    [scene.rootNode addChildNode:fn];
+    // 阴影底盘
+    CALayer *shadow = [CALayer layer];
+    shadow.backgroundColor = [UIColor colorWithWhite:0 alpha:0.35].CGColor;
+    shadow.cornerRadius = 4;
+    shadow.name = @"shadow";
+    [_stage.layer addSublayer:shadow];
 
-    [torusNode runAction:[SCNAction repeatActionForever:[SCNAction rotateByX:0 y:2*M_PI z:0 duration:8]]];
+    UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(pan:)];
+    pan.delegate = self;
+    [self.view addGestureRecognizer:pan];
+    UIPinchGestureRecognizer *pinch = [[UIPinchGestureRecognizer alloc] initWithTarget:self action:@selector(pinch:)];
+    pinch.delegate = self;
+    [self.view addGestureRecognizer:pinch];
 
-    UILabel *hint = MTLabel(CGRectMake(16, self.view.bounds.size.height - 54, self.view.bounds.size.width - 32, 20),
-                            @"拖动旋转 / 双指缩放（SceneKit allowsCameraControl）", 12, MTTextDim(), UIFontWeightRegular);
-    hint.autoresizingMask = UIViewAutoresizingFlexibleTopMargin | UIViewAutoresizingFlexibleWidth;
+    UILabel *hint = MTLabel(CGRectMake(16, 0, 10, 20),
+                            @"拖动旋转 / 双指缩放", 12, MTTextDim(), UIFontWeightRegular);
+    hint.tag = 9001;
+    hint.textAlignment = NSTextAlignmentCenter;
+    hint.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     [self.view addSubview:hint];
 }
+
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    UIEdgeInsets sa = UIEdgeInsetsZero;
+    if (@available(iOS 11.0, *)) sa = self.view.safeAreaInsets;
+    CGRect b = self.view.bounds;
+    // 顶栏 + 底部安全区都扣掉，内容严格居中在可用区域
+    CGFloat top = sa.top + (self.navigationController.navigationBar.translucent ? 0 : CGRectGetHeight(self.navigationController.navigationBar.frame));
+    CGFloat avail = CGRectGetHeight(b) - top - sa.bottom;
+    _stage.frame = CGRectMake(0, top, CGRectGetWidth(b), avail);
+    _stage.layer.sublayerTransform = MT3DPerspective(900.0 * self.zoom);
+
+    CGPoint c = CGPointMake(CGRectGetWidth(_stage.bounds) / 2.0, CGRectGetHeight(_stage.bounds) / 2.0);
+    _spin.position = c;
+    _spin.bounds = CGRectMake(0, 0, 1, 1);
+    _spin.anchorPoint = CGPointMake(0.5, 0.5);
+    _cube.position = CGPointZero;
+
+    CGFloat R = MIN(CGRectGetWidth(_stage.bounds), CGRectGetHeight(_stage.bounds)) * 0.30;
+    for (NSInteger i = 0; i < (NSInteger)_sats.count; i++) {
+        CGFloat a = i / (CGFloat)_sats.count * M_PI * 2;
+        CALayer *s = _sats[i];
+        s.position = CGPointMake(cos(a) * R, sin(a) * 0.35 * R);
+        s.transform = CATransform3DMakeTranslation(0, 0, sin(a) * R);
+    }
+    CALayer *shadow = nil;
+    for (CALayer *l in _stage.layer.sublayers) if ([l.name isEqualToString:@"shadow"]) shadow = l;
+    shadow.frame = CGRectMake(c.x - 90, c.y + R * 0.9, 180, 8);
+
+    UILabel *hint = [self.view viewWithTag:9001];
+    hint.frame = CGRectMake(16, CGRectGetMaxY(b) - sa.bottom - 28, CGRectGetWidth(b) - 32, 20);
+}
+
+- (void)pan:(UIPanGestureRecognizer *)g {
+    CGPoint t = [g translationInView:self.view];
+    if (g.state == UIGestureRecognizerStateBegan) { self.dragX = 0; self.dragY = 0; }
+    self.dragX += t.x * 0.008;
+    self.dragY -= t.y * 0.008;
+    [g setTranslation:CGPointZero inView:self.view];
+    _stage.layer.sublayerTransform = CATransform3DConcat(MT3DPerspective(900.0 * self.zoom),
+        CATransform3DConcat(CATransform3DMakeRotation(self.dragY, 1, 0, 0),
+                            CATransform3DMakeRotation(self.dragX, 0, 1, 0)));
+}
+
+- (void)pinch:(UIPinchGestureRecognizer *)g {
+    self.zoom = MAX(0.6, MIN(2.2, self.zoom * g.scale));
+    g.scale = 1;
+    _stage.layer.sublayerTransform = CATransform3DConcat(MT3DPerspective(900.0 * self.zoom),
+        CATransform3DConcat(CATransform3DMakeRotation(self.dragY, 1, 0, 0),
+                            CATransform3DMakeRotation(self.dragX, 0, 1, 0)));
+}
+
 @end
 
 #pragma mark - 多线程下载（分段 Range 并发 + 合并）
